@@ -25,7 +25,12 @@ const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 const PROJECT_ID = 'chatbot-uyib';
 
 const auth = new GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+    credentials: process.env.GOOGLE_CREDENTIALS 
+        ? JSON.parse(process.env.GOOGLE_CREDENTIALS) 
+        : undefined,
+    keyFile: process.env.GOOGLE_CREDENTIALS 
+        ? undefined 
+        : './credenciales.json',
     scopes: 'https://www.googleapis.com/auth/cloud-platform'
 });
 
