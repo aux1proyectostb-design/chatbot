@@ -134,7 +134,7 @@ async function procesarMensaje(mensaje, sesion) {
     );
 
     const modelo = genAI.getGenerativeModel({
-        model: 'gemini-1.5-flash',
+        model: "gemini-2.0-flash-lite",
         systemInstruction: promptCompleto
     });
 
@@ -184,7 +184,7 @@ ${conversacion}`;
     try {
         // Para extracción de datos usamos un modelo sin systemInstruction
         const modeloExtraccion = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash'
+      model: "gemini-2.0-flash-lite"
 });
         const result = await modeloExtraccion.generateContent(prompt);
         const texto = result.response.text().trim()
