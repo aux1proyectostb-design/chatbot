@@ -127,20 +127,17 @@ function extraerFlags(texto) {
 // =========================
 
 async function procesarMensaje(mensaje, sesion) {
-    // Construir el system prompt con datos ya recolectados si existen
     const promptCompleto = SYSTEM_PROMPT + (
         sesion.datos.nombre || sesion.datos.descripcion
             ? `\n\nDatos ya recolectados del usuario:\n${JSON.stringify(sesion.datos, null, 2)}`
             : ''
     );
 
-    // FIX PRINCIPAL: systemInstruction va en getGenerativeModel, no en startChat
     const modelo = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash'
+        model: 'gemini-2.0-flash',
         systemInstruction: promptCompleto
     });
 
-    // Construir historial en formato Gemini
     const historialGemini = sesion.historial.map(h => ({
         role: h.role,
         parts: [{ text: h.content }]
@@ -152,17 +149,14 @@ async function procesarMensaje(mensaje, sesion) {
             maxOutputTokens: 300,
             temperature: 0.7
         }
-        // IMPORTANTE: sin systemInstruction aquí
     });
 
     const result = await chat.sendMessage(mensaje);
     const respuesta = result.response.text().trim();
 
-    // Actualizar historial
-    sesion.historial.push({ role: 'user',  content: mensaje });
+    sesion.historial.push({ role: 'user', content: mensaje });
     sesion.historial.push({ role: 'model', content: respuesta });
 
-    // Mantener historial acotado (últimos 20 turnos = 40 entradas)
     if (sesion.historial.length > 40) {
         sesion.historial = sesion.historial.slice(-40);
     }
@@ -189,7 +183,9 @@ ${conversacion}`;
 
     try {
         // Para extracción de datos usamos un modelo sin systemInstruction
-        const modeloExtraccion = genAI.getGenerativeModel({ model: 'gemini-2.0-flash'})
+        const modeloExtraccion = genAI.getGenerativeModel({
+    model: 'gemini-2.0-flash'
+});
         const result = await modeloExtraccion.generateContent(prompt);
         const texto = result.response.text().trim()
             .replace(/```json/g, '')
