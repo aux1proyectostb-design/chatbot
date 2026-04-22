@@ -136,7 +136,7 @@ async function procesarMensaje(mensaje, sesion) {
 
     // FIX PRINCIPAL: systemInstruction va en getGenerativeModel, no en startChat
     const modelo = genAI.getGenerativeModel({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.0-flash'
         systemInstruction: promptCompleto
     });
 
@@ -189,7 +189,7 @@ ${conversacion}`;
 
     try {
         // Para extracción de datos usamos un modelo sin systemInstruction
-        const modeloExtraccion = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const modeloExtraccion = genAI.getGenerativeModel({ model: 'gemini-2.0-flash'})
         const result = await modeloExtraccion.generateContent(prompt);
         const texto = result.response.text().trim()
             .replace(/```json/g, '')
