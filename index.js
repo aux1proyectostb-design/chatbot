@@ -1,7 +1,7 @@
 const express = require('express');
 const xmlrpc  = require('xmlrpc');
 const axios   = require('axios');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 
