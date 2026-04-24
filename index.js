@@ -29,7 +29,9 @@ const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 // CONFIG GEMINI
 // =========================
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY
+});
 
 // =========================
 // MEMORIA DE CONVERSACIONES
@@ -136,29 +138,35 @@ function extraerFlags(texto) {
 
 async function procesarMensaje(mensaje, sesion) {
 
-    const modelo = genAI.getGenerativeModel({
-        model: "gemini-2.0-flash-lite",
-        systemInstruction: SYSTEM_PROMPT
+    const historial = sesion.historial
+        .map(h => `${h.role}: ${h.content}`)
+        .join('\n');
+
+    const prompt = `
+${SYSTEM_PROMPT}
+
+Historial previo:
+${historial}
+
+Usuario: ${mensaje}
+`;
+
+    const result = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt
     });
 
-    const historialGemini = sesion.historial.map(h => ({
-        role: h.role,
-        parts: [{ text: h.content }]
-    }));
-
-    const chat = modelo.startChat({
-        history: historialGemini
-    });
-
-    const result = await chat.sendMessage(mensaje);
-    const respuesta = result.response.text().trim();
+    const respuesta = (result.text || '').trim();
 
     sesion.historial.push({ role: 'user', content: mensaje });
     sesion.historial.push({ role: 'model', content: respuesta });
 
+    if (sesion.historial.length > 40) {
+        sesion.historial = sesion.historial.slice(-40);
+    }
+
     return respuesta;
 }
-
 // =========================
 // EXTRAER DATOS
 // =========================
