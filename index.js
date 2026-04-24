@@ -42,12 +42,12 @@ const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 // =========================
 
 const vertexAI = new VertexAI({
-    project: 'chatbot-uyib',
-    location: 'global'
+  project: 'chatbot-uyib',
+  location: 'us-central1'
 });
 
 const modeloIA = vertexAI.getGenerativeModel({
-    model: 'gemini-1.5-flash'
+  model: 'gemini-1.5-flash-002'
 });
 
 // =========================
@@ -199,7 +199,7 @@ ${conversacion}
 
     try {
         const modelo = genAI.getGenerativeModel({
-            model: "gemini-1.5-flash"
+            model: "gemini-1.5-flash-002"
         });
 
         const result = await modelo.generateContent(prompt);
