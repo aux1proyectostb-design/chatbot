@@ -47,7 +47,7 @@ const vertexAI = new VertexAI({
 });
 
 const modeloIA = vertexAI.getGenerativeModel({
-    model: 'gemini-2.0-flash'
+    model: 'gemini-1.5-flash'
 });
 
 // =========================
@@ -199,7 +199,7 @@ ${conversacion}
 
     try {
         const modelo = genAI.getGenerativeModel({
-            model: "gemini-2.0-flash"
+            model: "gemini-1.5-flash"
         });
 
         const result = await modelo.generateContent(prompt);
