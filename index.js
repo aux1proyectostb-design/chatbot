@@ -14,7 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const META_TOKEN      = process.env.META_TOKEN;
 const VERIFY_TOKEN    = 'telcobras2026';
-const PHONE_NUMBER_ID = '1103131696212310';
+const PHONE_NUMBER_ID = '1052042771330730';
 
 // =========================
 // CONFIG ODOO
