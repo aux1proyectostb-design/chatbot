@@ -43,7 +43,7 @@ const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 
 const vertexAI = new VertexAI({
     project: 'chatbot-uyib',
-    location: 'us-central1'
+    location: 'global'
 });
 
 const modeloIA = vertexAI.getGenerativeModel({
