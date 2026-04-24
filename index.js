@@ -257,6 +257,61 @@ async function crearLead({ nombre, telefono, servicio, descripcion }) {
 }
 
 // =========================
+// POLÍTICA DE PRIVACIDAD
+// =========================
+
+app.get('/privacy', (_req, res) => {
+    res.status(200).send(`
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Política de Privacidad - Telcobras SAS</title>
+<style>
+body{
+font-family:Arial,sans-serif;
+max-width:900px;
+margin:40px auto;
+padding:20px;
+line-height:1.6;
+color:#222;
+}
+h1,h2{color:#0a4b78;}
+</style>
+</head>
+<body>
+
+<h1>Política de Privacidad - Telcobras SAS</h1>
+
+<p>Telcobras SAS protege la información suministrada por clientes y usuarios.</p>
+
+<h2>1. Datos recopilados</h2>
+<p>Nombre, teléfono, correo electrónico y mensajes enviados por canales digitales.</p>
+
+<h2>2. Finalidad</h2>
+<ul>
+<li>Atención comercial</li>
+<li>Soporte técnico</li>
+<li>Seguimiento de solicitudes</li>
+<li>Gestión comercial</li>
+</ul>
+
+<h2>3. Automatización</h2>
+<p>Podemos usar asistentes virtuales e inteligencia artificial para mejorar tiempos de respuesta.</p>
+
+<h2>4. Seguridad</h2>
+<p>Aplicamos medidas razonables de protección de información.</p>
+
+<h2>5. Contacto</h2>
+<p>proyectos@telcobras.com</p>
+
+</body>
+</html>
+`);
+});
+
+// =========================
 // WEBHOOK META VERIFICAR
 // =========================
 
