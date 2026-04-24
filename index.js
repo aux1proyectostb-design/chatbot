@@ -4,6 +4,17 @@ const axios   = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 const { VertexAI } = require('@google-cloud/vertexai');
 
+const fs = require('fs');
+
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  fs.writeFileSync(
+    '/tmp/google-creds.json',
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
+  );
+
+  process.env.GOOGLE_APPLICATION_CREDENTIALS =
+    '/tmp/google-creds.json';
+} 
 const app = express();
 
 app.use(express.json());
