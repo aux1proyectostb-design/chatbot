@@ -2,6 +2,7 @@ const express = require('express');
 const xmlrpc  = require('xmlrpc');
 const axios   = require('axios');
 const { GoogleGenAI } = require('@google/genai');
+const { VertexAI } = require('@google-cloud/vertexai');
 
 const app = express();
 
@@ -29,8 +30,13 @@ const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 // CONFIG GEMINI
 // =========================
 
-const genAI = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
+const vertexAI = new VertexAI({
+    project: 'chatbot-uyib',
+    location: 'us-central1'
+});
+
+const modeloIA = vertexAI.getGenerativeModel({
+    model: 'gemini-2.0-flash'
 });
 
 // =========================
@@ -145,25 +151,19 @@ async function procesarMensaje(mensaje, sesion) {
     const prompt = `
 ${SYSTEM_PROMPT}
 
-Historial previo:
+Historial:
 ${historial}
 
 Usuario: ${mensaje}
 `;
 
-    const result = await genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt
-    });
+    const result = await modeloIA.generateContent(prompt);
 
-    const respuesta = (result.text || '').trim();
+    const respuesta =
+        result.response.candidates[0].content.parts[0].text.trim();
 
     sesion.historial.push({ role: 'user', content: mensaje });
     sesion.historial.push({ role: 'model', content: respuesta });
-
-    if (sesion.historial.length > 40) {
-        sesion.historial = sesion.historial.slice(-40);
-    }
 
     return respuesta;
 }
