@@ -1,12 +1,20 @@
 const express = require('express');
 const xmlrpc  = require('xmlrpc');
-const twilio  = require('twilio');
+const axios   = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// =========================
+// CONFIG META WHATSAPP
+// =========================
+
+const META_TOKEN      = process.env.META_TOKEN;
+const VERIFY_TOKEN    = 'telcobras2026';
+const PHONE_NUMBER_ID = '1103131696212310';
 
 // =========================
 // CONFIG ODOO
@@ -25,35 +33,46 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // =========================
 // MEMORIA DE CONVERSACIONES
-// Almacena historial y datos recolectados por número de teléfono
 // =========================
 
 const sesiones = new Map();
-
-const SESION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
+const SESION_TTL_MS = 30 * 60 * 1000;
 
 function obtenerSesion(telefono) {
     const ahora = Date.now();
+
     if (!sesiones.has(telefono)) {
         sesiones.set(telefono, {
             historial: [],
-            datos: { nombre: null, telefono: null, descripcion: null, servicio: null },
+            datos: {
+                nombre: null,
+                telefono: null,
+                descripcion: null,
+                servicio: null
+            },
             ultimaActividad: ahora
         });
     }
+
     const sesion = sesiones.get(telefono);
-    // Resetear sesión si expiró
+
     if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
         sesion.historial = [];
-        sesion.datos = { nombre: null, telefono: null, descripcion: null, servicio: null };
+        sesion.datos = {
+            nombre: null,
+            telefono: null,
+            descripcion: null,
+            servicio: null
+        };
     }
+
     sesion.ultimaActividad = ahora;
     return sesion;
 }
 
-// Limpieza periódica de sesiones inactivas
 setInterval(() => {
     const ahora = Date.now();
+
     for (const [tel, sesion] of sesiones.entries()) {
         if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
             sesiones.delete(tel);
@@ -65,39 +84,29 @@ setInterval(() => {
 // SYSTEM PROMPT
 // =========================
 
-const SYSTEM_PROMPT = `Eres Teli, el asistente virtual de Telcobras SAS, empresa colombiana de telecomunicaciones y automatización industrial ubicada en Cali.
+const SYSTEM_PROMPT = `Eres Teli, el asistente virtual de Telcobras SAS, empresa colombiana ubicada en Cali.
 
-Tu personalidad:
-- Amable, profesional y cercano, hablas en español colombiano natural
-- Eres conciso (máximo 3 líneas por respuesta en WhatsApp)
-- Usas un tono cálido pero profesional, como un buen asesor colombiano
-- NUNCA inventas precios ni prometes cosas que no puedes cumplir
-- Si no sabes algo, dices que un asesor se comunicará pronto
+Hablas como asesor colombiano profesional y cercano.
+Responde corto (máximo 3 líneas).
 
-Servicios de Telcobras:
-- Automatización industrial y SCADA
-- Telecomunicaciones y redes
-- Mantenimiento de sistemas de monitoreo
-- Instalación de sensores y equipos industriales
-- Soporte técnico especializado
+Servicios:
+- Automatización industrial
+- Telecomunicaciones
+- Sensores
+- Soporte técnico
+- Redes
+- Mantenimiento industrial
 
-Reglas de conversación:
-- Respuestas cortas y directas, máximo 2-3 oraciones
-- No uses asteriscos, markdown ni emojis excesivos
-- Siempre termina con una pregunta o acción clara para el usuario
+Si requieren soporte, pide:
+1. Nombre
+2. Número
+3. Descripción del problema
 
-Recolección de datos para soporte técnico:
-- Si el usuario necesita soporte, debes recolectar en orden: nombre completo, número de contacto, descripción del problema
-- Cuando ya tengas los 3 datos, confirma al usuario que su solicitud fue registrada y que un asesor lo contactará pronto
-- Una vez confirmado, incluye al final de tu respuesta exactamente esta línea (sin mostrarla al usuario de forma visible):
-  ##CREAR_LEAD##
+Cuando ya tengas todo responde normalmente y agrega:
+##CREAR_LEAD##
 
-Detección de intención:
-- Si el usuario saluda, responde amablemente y pregunta en qué puedes ayudar
-- Si el usuario pregunta por servicios, explica brevemente los servicios de Telcobras
-- Si el usuario quiere soporte o tiene un problema técnico, inicia el flujo de recolección de datos
-- Si el usuario quiere hablar con un asesor humano, dile que lo conectarás pronto y responde con ##ESCALAR##
-- Si el usuario dice algo fuera de contexto o no relacionado con Telcobras, redirige amablemente`;
+Si quieren asesor humano agrega:
+##ESCALAR##`;
 
 // =========================
 // UTILIDADES
@@ -113,7 +122,7 @@ function limpiarTelefono(numero) {
 function extraerFlags(texto) {
     return {
         crearLead: texto.includes('##CREAR_LEAD##'),
-        escalar:   texto.includes('##ESCALAR##'),
+        escalar: texto.includes('##ESCALAR##'),
         limpio: texto
             .replace('##CREAR_LEAD##', '')
             .replace('##ESCALAR##', '')
@@ -122,20 +131,14 @@ function extraerFlags(texto) {
 }
 
 // =========================
-// GEMINI - Chat con memoria
-// FIX: systemInstruction debe ir en getGenerativeModel, no en startChat
+// GEMINI
 // =========================
 
 async function procesarMensaje(mensaje, sesion) {
-    const promptCompleto = SYSTEM_PROMPT + (
-        sesion.datos.nombre || sesion.datos.descripcion
-            ? `\n\nDatos ya recolectados del usuario:\n${JSON.stringify(sesion.datos, null, 2)}`
-            : ''
-    );
 
     const modelo = genAI.getGenerativeModel({
         model: "gemini-2.0-flash-lite",
-        systemInstruction: promptCompleto
+        systemInstruction: SYSTEM_PROMPT
     });
 
     const historialGemini = sesion.historial.map(h => ({
@@ -144,11 +147,7 @@ async function procesarMensaje(mensaje, sesion) {
     }));
 
     const chat = modelo.startChat({
-        history: historialGemini,
-        generationConfig: {
-            maxOutputTokens: 300,
-            temperature: 0.7
-        }
+        history: historialGemini
     });
 
     const result = await chat.sendMessage(mensaje);
@@ -157,44 +156,49 @@ async function procesarMensaje(mensaje, sesion) {
     sesion.historial.push({ role: 'user', content: mensaje });
     sesion.historial.push({ role: 'model', content: respuesta });
 
-    if (sesion.historial.length > 40) {
-        sesion.historial = sesion.historial.slice(-40);
-    }
-
     return respuesta;
 }
 
 // =========================
-// EXTRAER DATOS DEL HISTORIAL CON GEMINI
+// EXTRAER DATOS
 // =========================
 
 async function extraerDatosConGemini(historial) {
+
     const conversacion = historial
-        .map(h => `${h.role === 'user' ? 'Usuario' : 'Teli'}: ${h.content}`)
+        .map(h => `${h.role}: ${h.content}`)
         .join('\n');
 
-    const prompt = `De la siguiente conversación de WhatsApp, extrae los datos del usuario si fueron mencionados.
-Responde ÚNICAMENTE con un JSON válido con estas claves: nombre, telefono, descripcion, servicio.
-Si un dato no fue mencionado, usa null.
-No incluyas texto adicional, solo el JSON.
+    const prompt = `
+Extrae del siguiente chat:
+nombre, telefono, descripcion, servicio
 
-Conversación:
-${conversacion}`;
+Responde solo JSON válido.
+
+${conversacion}
+`;
 
     try {
-        // Para extracción de datos usamos un modelo sin systemInstruction
-        const modeloExtraccion = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash-lite"
-});
-        const result = await modeloExtraccion.generateContent(prompt);
-        const texto = result.response.text().trim()
+        const modelo = genAI.getGenerativeModel({
+            model: "gemini-2.0-flash-lite"
+        });
+
+        const result = await modelo.generateContent(prompt);
+
+        const texto = result.response.text()
             .replace(/```json/g, '')
             .replace(/```/g, '')
             .trim();
+
         return JSON.parse(texto);
-    } catch (err) {
-        console.error("Error extrayendo datos:", err.message);
-        return { nombre: null, telefono: null, descripcion: null, servicio: null };
+
+    } catch (error) {
+        return {
+            nombre: null,
+            telefono: null,
+            descripcion: null,
+            servicio: null
+        };
     }
 }
 
@@ -203,111 +207,145 @@ ${conversacion}`;
 // =========================
 
 async function autenticarOdoo() {
-    const common = xmlrpc.createSecureClient({ url: `${ODOO_URL}/xmlrpc/2/common` });
+
+    const common = xmlrpc.createSecureClient({
+        url: `${ODOO_URL}/xmlrpc/2/common`
+    });
+
     return new Promise((resolve, reject) => {
-        common.methodCall('authenticate', [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}], (err, uid) => {
-            if (err) return reject(err);
-            if (!uid) return reject("Autenticación fallida en Odoo");
-            resolve(uid);
-        });
+
+        common.methodCall(
+            'authenticate',
+            [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
+            (err, uid) => {
+                if (err) return reject(err);
+                resolve(uid);
+            }
+        );
     });
 }
 
 function ejecutarOdoo(uid, modelo, metodo, args) {
+
     return new Promise((resolve, reject) => {
-        const models = xmlrpc.createSecureClient({ url: `${ODOO_URL}/xmlrpc/2/object` });
-        models.methodCall('execute_kw', [
-            ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args
-        ], (err, res) => {
-            if (err) return reject(err);
-            resolve(res);
+
+        const models = xmlrpc.createSecureClient({
+            url: `${ODOO_URL}/xmlrpc/2/object`
         });
+
+        models.methodCall(
+            'execute_kw',
+            [ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args],
+            (err, res) => {
+                if (err) return reject(err);
+                resolve(res);
+            }
+        );
     });
 }
 
 async function crearLead({ nombre, telefono, servicio, descripcion }) {
+
     const uid = await autenticarOdoo();
-    const telefonoLimpio = limpiarTelefono(telefono);
 
-    console.log("Creando lead Odoo:", { nombre, telefono: telefonoLimpio, servicio, descripcion });
-
-    const leadId = await ejecutarOdoo(uid, 'crm.lead', 'create', [{
-        name: `Solicitud de ${servicio || 'soporte'} - ${nombre}`,
+    return await ejecutarOdoo(uid, 'crm.lead', 'create', [{
+        name: `Solicitud ${servicio} - ${nombre}`,
         contact_name: nombre,
-        phone: telefonoLimpio || 'No registrado',
-        description: `Servicio: ${servicio || 'soporte'}\nDetalle: ${descripcion}\nOrigen: Chatbot Telcobras`
+        phone: telefono,
+        description: descripcion
     }]);
-
-    return leadId;
 }
 
 // =========================
-// RUTA WHATSAPP
+// WEBHOOK META VERIFICAR
 // =========================
 
-app.post('/whatsapp', async (req, res) => {
-    const MessagingResponse = twilio.twiml.MessagingResponse;
-    const twiml = new MessagingResponse();
+app.get('/webhook', (req, res) => {
 
-    const mensaje  = req.body.Body;
-    const telefono = req.body.From;
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-    console.log("WhatsApp recibido:", mensaje, "| De:", telefono);
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        return res.status(200).send(challenge);
+    }
+
+    return res.sendStatus(403);
+});
+
+// =========================
+// WEBHOOK META MENSAJES
+// =========================
+
+app.post('/webhook', async (req, res) => {
 
     try {
-        const sesion = obtenerSesion(telefono);
 
-        // Procesar con Gemini (con memoria de conversación)
-        const respuestaRaw = await procesarMensaje(mensaje, sesion);
-        const { crearLead: debeCrearLead, escalar, limpio: respuestaFinal } = extraerFlags(respuestaRaw);
+        const message =
+            req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-        console.log("Respuesta Gemini:", respuestaFinal);
-        console.log("Flags — crearLead:", debeCrearLead, "| escalar:", escalar);
-
-        // Crear lead en Odoo si Gemini lo indica
-        if (debeCrearLead) {
-            try {
-                const datos = await extraerDatosConGemini(sesion.historial);
-                sesion.datos = { ...sesion.datos, ...datos };
-
-                const leadId = await crearLead({
-                    nombre:      sesion.datos.nombre      || 'Cliente',
-                    telefono:    sesion.datos.telefono    || limpiarTelefono(telefono),
-                    servicio:    sesion.datos.servicio    || 'soporte',
-                    descripcion: sesion.datos.descripcion || 'Sin descripción'
-                });
-
-                console.log("Lead creado, ID:", leadId);
-
-                // Limpiar datos de la sesión tras crear el lead
-                sesion.datos = { nombre: null, telefono: null, descripcion: null, servicio: null };
-            } catch (err) {
-                console.error("ERROR creando lead en Odoo:", err);
-            }
+        if (!message) {
+            return res.sendStatus(200);
         }
 
-        twiml.message(respuestaFinal);
-        res.writeHead(200, { 'Content-Type': 'text/xml' });
-        res.end(twiml.toString());
+        const telefono = message.from;
+        const mensaje = message.text?.body || '';
+
+        console.log('WhatsApp recibido:', mensaje);
+
+        const sesion = obtenerSesion(telefono);
+
+        const respuestaRaw = await procesarMensaje(mensaje, sesion);
+
+        const {
+            crearLead: debeCrearLead,
+            limpio: respuestaFinal
+        } = extraerFlags(respuestaRaw);
+
+        if (debeCrearLead) {
+
+            const datos = await extraerDatosConGemini(sesion.historial);
+
+            await crearLead({
+                nombre: datos.nombre || 'Cliente',
+                telefono: datos.telefono || telefono,
+                servicio: datos.servicio || 'soporte',
+                descripcion: datos.descripcion || 'Sin detalle'
+            });
+        }
+
+        await axios.post(
+            `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: 'whatsapp',
+                to: telefono,
+                text: { body: respuestaFinal }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${META_TOKEN}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        return res.sendStatus(200);
 
     } catch (error) {
-        console.error("ERROR GENERAL:", error.message, error.stack);
-        twiml.message("Disculpa, tuve un problema procesando tu mensaje. En un momento te atendemos.");
-        res.writeHead(200, { 'Content-Type': 'text/xml' });
-        res.end(twiml.toString());
+
+        console.error(error.response?.data || error.message);
+        return res.sendStatus(500);
     }
 });
 
 // =========================
-// HEALTH CHECK
+// HEALTH
 // =========================
 
 app.get('/health', (_req, res) => {
     res.json({
-        status: 'ok',
-        gemini: !!process.env.GEMINI_API_KEY,
-        odooPassword: !!process.env.ODOO_PASSWORD,
-        sesionesActivas: sesiones.size
+        ok: true,
+        sesiones: sesiones.size
     });
 });
 
@@ -318,6 +356,5 @@ app.get('/health', (_req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(`Servidor Telcobras corriendo en puerto ${PORT}`);
+    console.log(`Servidor Telcobras activo en ${PORT}`);
 });
-// force-redeploy-202604221008
