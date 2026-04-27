@@ -65,7 +65,7 @@ function obtenerSesion(telefono) {
 }
 
 // =========================
-// PROMPT PRO
+// PROMPT
 // =========================
 
 const SYSTEM_PROMPT = `
@@ -141,9 +141,9 @@ function extraerFlags(texto) {
         crearTicket: texto.includes('##CREAR_TICKET##'),
         escalar: texto.includes('##ESCALAR##'),
         limpio: texto
-            .replace('##CREAR_LEAD##', '')
-            .replace('##CREAR_TICKET##', '')
-            .replace('##ESCALAR##', '')
+            .replaceAll('##CREAR_LEAD##', '')
+            .replaceAll('##CREAR_TICKET##', '')
+            .replaceAll('##ESCALAR##', '')
             .trim()
     };
 }
@@ -419,13 +419,6 @@ app.post('/webhook', async (req, res) => {
         mensajesProcesados.add(message.id);
         setTimeout(() => mensajesProcesados.delete(message.id), 3600000);
 
-        const now = Math.floor(Date.now() / 1000);
-        const msgTime = Number(message.timestamp || 0);
-
-        if (now - msgTime > 180) {
-            return res.sendStatus(200);
-        }
-
         const telefono = message.from;
         const mensaje = message.text?.body || '';
 
@@ -443,16 +436,16 @@ app.post('/webhook', async (req, res) => {
         }
 
         const {
-            crearLead,
-            crearTicket,
+            crearLead: debeLead,
+            crearTicket: debeTicket,
             limpio: respuestaFinal
         } = extraerFlags(respuestaRaw);
 
-        if (crearLead || crearTicket) {
+        if (debeLead || debeTicket) {
 
             const datos = await extraerDatosConGemini(sesion.historial);
 
-            if (crearLead) {
+            if (debeLead) {
 
                 await crearLead({
                     nombre: datos.nombre || 'Cliente',
@@ -464,7 +457,7 @@ app.post('/webhook', async (req, res) => {
                 });
             }
 
-            if (crearTicket) {
+            if (debeTicket) {
 
                 const nivel = detectarPrioridad(datos.descripcion || '');
 
@@ -504,7 +497,6 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
 
     } catch (error) {
-
         console.error(error.response?.data || error.message);
         return res.sendStatus(500);
     }
