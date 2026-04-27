@@ -116,12 +116,6 @@ Cuando tengas datos agrega:
 
 Si detectas soporte:
 Solicita nombre, empresa, ciudad, teléfono y descripción de la falla.
-
-Clasifica prioridad:
-Nivel 1 = operación detenida, sin internet total, planta parada, sistema caído.
-Nivel 2 = falla parcial importante.
-Nivel 3 = consulta menor o solicitud básica.
-
 Cuando tengas datos agrega:
 ##CREAR_TICKET##
 
@@ -148,31 +142,63 @@ function extraerFlags(texto) {
     };
 }
 
+function limpiarTelefono(numero = '') {
+
+    let tel = String(numero).replace(/\D/g, '');
+
+    if (tel.length === 10) {
+        tel = '57' + tel;
+    }
+
+    if (tel.length > 12) {
+        tel = tel.slice(-12);
+    }
+
+    return tel;
+}
+
+function detectarTelefono(texto = '') {
+
+    const match = texto.match(/(\+?\d[\d\s\-]{7,20})/);
+
+    if (!match) return null;
+
+    return limpiarTelefono(match[1]);
+}
+
+function limpiarTexto(txt = '') {
+    return String(txt).trim().replace(/\s+/g, ' ');
+}
+
 function detectarPrioridad(descripcion = '') {
 
     const txt = descripcion.toLowerCase();
 
     const nivel1 = [
-        'sin internet',
+        'sin internet total',
         'no hay internet',
+        'sin servicio',
         'caido',
         'caído',
         'planta parada',
         'servidor caido',
         'servidor caído',
-        'red caida',
         'red caída',
-        'sin servicio',
+        'red caida',
+        'scada caido',
         'urgente'
     ];
 
     const nivel2 = [
+        'intermitente',
+        'funciona a veces',
+        'a veces no',
         'lento',
         'lentitud',
-        'intermitente',
+        'se cae',
+        'inestable',
         'error',
         'falla parcial',
-        'camara dañada',
         'sensor fallando'
     ];
 
@@ -227,7 +253,7 @@ Usuario: ${mensaje}
 // EXTRAER DATOS
 // =========================
 
-async function extraerDatosConGemini(historial) {
+async function extraerDatosConGemini(historial, telefonoWhatsapp = '') {
 
     const conversacion = historial
         .map(h => `${h.role}: ${h.content}`)
@@ -235,9 +261,17 @@ async function extraerDatosConGemini(historial) {
 
     const prompt = `
 Extrae del chat:
-nombre, telefono, empresa, ciudad, descripcion, servicio
 
-Responde solo JSON válido.
+nombre
+telefono
+empresa
+ciudad
+descripcion
+servicio
+
+Responder SOLO JSON válido.
+
+Si no sabes un dato usa null.
 
 ${conversacion}
 `;
@@ -249,17 +283,35 @@ ${conversacion}
             contents: prompt
         });
 
-        return JSON.parse(result.text);
+        const limpio = (result.text || '')
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        const datos = JSON.parse(limpio);
+
+        return {
+            nombre: limpiarTexto(datos.nombre || 'Cliente'),
+            telefono: limpiarTelefono(
+                datos.telefono ||
+                detectarTelefono(conversacion) ||
+                telefonoWhatsapp
+            ),
+            empresa: limpiarTexto(datos.empresa || 'No indica'),
+            ciudad: limpiarTexto(datos.ciudad || 'No indica'),
+            descripcion: limpiarTexto(datos.descripcion || 'Sin detalle'),
+            servicio: limpiarTexto(datos.servicio || 'General')
+        };
 
     } catch (error) {
 
         return {
-            nombre: null,
-            telefono: null,
-            empresa: null,
-            ciudad: null,
-            descripcion: null,
-            servicio: null
+            nombre: 'Cliente',
+            telefono: limpiarTelefono(telefonoWhatsapp),
+            empresa: 'No indica',
+            ciudad: 'No indica',
+            descripcion: 'Sin detalle',
+            servicio: 'General'
         };
     }
 }
@@ -311,14 +363,21 @@ async function crearLead(datos) {
     const uid = await autenticarOdoo();
 
     return await ejecutarOdoo(uid, 'crm.lead', 'create', [{
-        name: `Solicitud ${datos.servicio || 'Comercial'} - ${datos.nombre}`,
+        name: `${datos.servicio} - ${datos.empresa}`,
         contact_name: datos.nombre,
+        partner_name: datos.empresa,
         phone: datos.telefono,
+        city: datos.ciudad,
         description:
-`${datos.descripcion}
+`Solicitud Comercial
 
-Empresa: ${datos.empresa || 'No indica'}
-Ciudad: ${datos.ciudad || 'No indica'}`
+Cliente: ${datos.nombre}
+Empresa: ${datos.empresa}
+Ciudad: ${datos.ciudad}
+Telefono: ${datos.telefono}
+
+Necesidad:
+${datos.descripcion}`
     }]);
 }
 
@@ -327,15 +386,21 @@ async function crearTicket(datos) {
     const uid = await autenticarOdoo();
 
     return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
-        name: `${datos.prioridadTexto} - ${datos.nombre}`,
+        name: `${datos.prioridadTexto} - ${datos.empresa}`,
         team_id: 7,
+        priority: datos.prioridad,
         partner_name: datos.nombre,
         partner_phone: datos.telefono,
         description:
-`${datos.descripcion}
+`Caso de Soporte
 
-Empresa: ${datos.empresa || 'No indica'}
-Ciudad: ${datos.ciudad || 'No indica'}`
+Cliente: ${datos.nombre}
+Empresa: ${datos.empresa}
+Ciudad: ${datos.ciudad}
+Telefono: ${datos.telefono}
+
+Detalle:
+${datos.descripcion}`
     }]);
 }
 
@@ -358,8 +423,8 @@ async function enviarAlertaSoporte(datos) {
 
 Cliente: ${datos.nombre}
 Telefono: ${datos.telefono}
-Empresa: ${datos.empresa || 'No indica'}
-Ciudad: ${datos.ciudad || 'No indica'}
+Empresa: ${datos.empresa}
+Ciudad: ${datos.ciudad}
 
 Caso:
 ${datos.descripcion}
@@ -435,7 +500,7 @@ app.post('/webhook', async (req, res) => {
             respuestaRaw = 'Gracias por escribir a Telcobras. En breve uno de nuestros asesores le atenderá.';
         }
 
-        const {
+        let {
             crearLead: debeLead,
             crearTicket: debeTicket,
             limpio: respuestaFinal
@@ -443,35 +508,38 @@ app.post('/webhook', async (req, res) => {
 
         if (debeLead || debeTicket) {
 
-            const datos = await extraerDatosConGemini(sesion.historial);
+            const datos = await extraerDatosConGemini(
+                sesion.historial,
+                telefono
+            );
 
             if (debeLead) {
 
-                await crearLead({
-                    nombre: datos.nombre || 'Cliente',
-                    telefono: datos.telefono || telefono,
-                    empresa: datos.empresa,
-                    ciudad: datos.ciudad,
-                    servicio: datos.servicio || 'Comercial',
-                    descripcion: datos.descripcion || 'Sin detalle'
-                });
+                const leadId = await crearLead(datos);
+
+                respuestaFinal += `
+
+Su solicitud comercial fue registrada correctamente.
+Caso No. ${leadId}.`;
             }
 
             if (debeTicket) {
 
-                const nivel = detectarPrioridad(datos.descripcion || '');
+                const nivel = detectarPrioridad(datos.descripcion);
 
                 const ticket = {
-                    nombre: datos.nombre || 'Cliente',
-                    telefono: datos.telefono || telefono,
-                    empresa: datos.empresa,
-                    ciudad: datos.ciudad,
-                    descripcion: datos.descripcion || 'Sin detalle',
+                    ...datos,
                     prioridad: nivel.prioridad,
                     prioridadTexto: nivel.texto
                 };
 
-                await crearTicket(ticket);
+                const ticketId = await crearTicket(ticket);
+
+                respuestaFinal += `
+
+Su solicitud fue registrada exitosamente.
+Ticket No. ${ticketId}
+Prioridad: ${nivel.texto}.`;
 
                 if (nivel.prioridad === '3') {
                     await enviarAlertaSoporte(ticket);
