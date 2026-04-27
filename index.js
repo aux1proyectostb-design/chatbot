@@ -328,14 +328,14 @@ async function crearTicket(datos) {
 
     return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
         name: `${datos.prioridadTexto} - ${datos.nombre}`,
+        team_id: 7,
         partner_name: datos.nombre,
         partner_phone: datos.telefono,
         description:
 `${datos.descripcion}
 
 Empresa: ${datos.empresa || 'No indica'}
-Ciudad: ${datos.ciudad || 'No indica'}`,
-        priority: datos.prioridad
+Ciudad: ${datos.ciudad || 'No indica'}`
     }]);
 }
 
