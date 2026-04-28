@@ -7,9 +7,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// =========================
-// CONFIGURACION
-// =========================
+// ======================================
+// CONFIG
+// ======================================
 
 const META_TOKEN = process.env.META_TOKEN;
 const VERIFY_TOKEN = 'telcobras2026';
@@ -25,18 +25,17 @@ const genAI = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY
 });
 
-// =========================
-// MEMORIA SESIONES
-// =========================
+// ======================================
+// MEMORIA
+// ======================================
 
 const sesiones = new Map();
 const mensajesProcesados = new Set();
-
 const SESION_TTL_MS = 30 * 60 * 1000;
 
-// =========================
+// ======================================
 // SESION
-// =========================
+// ======================================
 
 function obtenerSesion(telefono) {
   const ahora = Date.now();
@@ -44,8 +43,8 @@ function obtenerSesion(telefono) {
   if (!sesiones.has(telefono)) {
     sesiones.set(telefono, {
       historial: [],
-      estado: 'nuevo',
       cliente: null,
+      ultimoTicket: null,
       ultimaActividad: ahora
     });
   }
@@ -54,21 +53,16 @@ function obtenerSesion(telefono) {
 
   if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
     sesion.historial = [];
-    sesion.estado = 'nuevo';
-    sesion.cliente = null;
+    sesion.ultimoTicket = null;
   }
 
   sesion.ultimaActividad = ahora;
   return sesion;
 }
 
-// =========================
+// ======================================
 // UTILIDADES
-// =========================
-
-function limpiarTexto(txt = '') {
-  return String(txt).trim().replace(/\s+/g, ' ');
-}
+// ======================================
 
 function limpiarTelefono(numero = '') {
   let tel = String(numero).replace(/\D/g, '');
@@ -79,23 +73,13 @@ function limpiarTelefono(numero = '') {
   return tel;
 }
 
-function esSaludo(txt = '') {
-  const t = txt.toLowerCase().trim();
-
-  return [
-    'hola',
-    'buenas',
-    'buenos dias',
-    'buenos días',
-    'buen dia',
-    'buen día',
-    'hello'
-  ].includes(t);
+function limpiarTexto(txt = '') {
+  return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-// =========================
+// ======================================
 // ODOO BASE
-// =========================
+// ======================================
 
 async function autenticarOdoo() {
   const common = xmlrpc.createSecureClient({
@@ -125,9 +109,9 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
   });
 }
 
-// =========================
-// BUSCAR CLIENTE
-// =========================
+// ======================================
+// CLIENTE POR TELEFONO
+// ======================================
 
 async function buscarClientePorTelefono(numero) {
   try {
@@ -142,7 +126,7 @@ async function buscarClientePorTelefono(numero) {
 
     if (!ids.length) return null;
 
-    const data = await ejecutarOdoo(uid, 'res.partner', 'read', [
+    const data = await ejecutarOdoo(uid, 'read', 'res.partner', [
       [ids[0]],
       ['name', 'phone', 'mobile', 'city']
     ]);
@@ -154,106 +138,9 @@ async function buscarClientePorTelefono(numero) {
   }
 }
 
-// =========================
-// IA PRIORIDAD
-// =========================
-
-async function detectarPrioridadIA(descripcion = '', empresa = '') {
-  try {
-
-    const prompt = `
-Clasifica ticket empresarial:
-
-Nivel 1:
-Sin internet total, operación detenida, caída total.
-
-Nivel 2:
-Intermitencia, lentitud severa, falla parcial.
-
-Nivel 3:
-Consulta menor o solicitud básica.
-
-Caso: ${descripcion}
-Empresa: ${empresa}
-
-Responder SOLO JSON:
-
-{
- "prioridad":"1 o 2 o 3",
- "texto":"NIVEL ...",
- "sla":"15 minutos / 1 hora / 4 horas"
-}
-`;
-
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-
-    const limpio = (result.text || '')
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
-    return JSON.parse(limpio);
-
-  } catch {
-
-    return {
-      prioridad: '1',
-      texto: 'NIVEL 3 NORMAL',
-      sla: '4 horas'
-    };
-  }
-}
-
-// =========================
-// IA EXTRAER DATOS
-// =========================
-
-async function extraerDatosIA(texto = '') {
-  try {
-
-    const prompt = `
-Extrae del texto:
-
-nombre
-empresa
-ciudad
-descripcion
-
-Responder SOLO JSON.
-
-Texto:
-${texto}
-`;
-
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-
-    const limpio = (result.text || '')
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
-    return JSON.parse(limpio);
-
-  } catch {
-
-    return {
-      nombre: null,
-      empresa: null,
-      ciudad: null,
-      descripcion: texto
-    };
-  }
-}
-
-// =========================
+// ======================================
 // CREAR TICKET
-// =========================
+// ======================================
 
 async function crearTicket(datos) {
   const uid = await autenticarOdoo();
@@ -274,13 +161,12 @@ ${datos.descripcion}`
   }]);
 }
 
-// =========================
+// ======================================
 // ALERTA INTERNA
-// =========================
+// ======================================
 
 async function enviarAlerta(ticket) {
   try {
-
     await axios.post(
       `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -307,276 +193,213 @@ SLA: ${ticket.sla}`
         }
       }
     );
-
   } catch {}
 }
 
-// =========================
-// BOT HUMANO PREMIUM
-// =========================
+// ======================================
+// IA CENTRAL
+// ======================================
+
+async function procesarConIA(mensaje, sesion, telefono) {
+
+  const nombre = sesion.cliente?.name || '';
+  const ticket = sesion.ultimoTicket
+    ? `Ticket actual: ${sesion.ultimoTicket.id}`
+    : 'Sin ticket actual';
+
+  const historial = sesion.historial
+    .slice(-10)
+    .map(x => `${x.role}: ${x.text}`)
+    .join('\n');
+
+  const prompt = `
+Eres Teli, asistente oficial de Telcobras SAS.
+
+Tono:
+Profesional, cercano, humano, corporativo.
+
+Cliente conocido: ${nombre || 'No'}
+Telefono: ${telefono}
+${ticket}
+
+Debes responder natural y breve.
+
+Clasifica intención y agrega solo si aplica:
+
+##SALUDO##
+##SOPORTE##
+##VENTAS##
+##VISITA##
+##ASESOR##
+##CREAR_TICKET##
+##SEGUIMIENTO##
+##DESPEDIDA##
+
+Reglas:
+
+- Si el usuario reporta una falla NUEVA -> ##CREAR_TICKET##
+- Si pregunta por caso anterior -> ##SEGUIMIENTO##
+- Si se despide o agradece -> ##DESPEDIDA##
+- Si saluda -> ##SALUDO##
+
+Historial:
+${historial}
+
+Usuario:
+${mensaje}
+`;
+
+  const result = await genAI.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt
+  });
+
+  return (result.text || '').trim();
+}
+
+// ======================================
+// IA PRIORIDAD
+// ======================================
+
+async function detectarPrioridadIA(descripcion = '') {
+  try {
+
+    const prompt = `
+Clasifica prioridad:
+
+Nivel 1:
+Sin internet total, operación detenida.
+
+Nivel 2:
+Intermitencia, lentitud, falla parcial.
+
+Nivel 3:
+Consulta menor.
+
+Caso:
+${descripcion}
+
+Responder SOLO JSON:
+
+{
+ "prioridad":"1 o 2 o 3",
+ "texto":"NIVEL ...",
+ "sla":"15 minutos / 1 hora / 4 horas"
+}
+`;
+
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt
+    });
+
+    const limpio = (result.text || '')
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
+
+    return JSON.parse(limpio);
+
+  } catch {
+
+    return {
+      prioridad: '1',
+      texto: 'NIVEL 3',
+      sla: '4 horas'
+    };
+  }
+}
+
+// ======================================
+// RESPUESTA CENTRAL
+// ======================================
 
 async function responderBot(mensaje, sesion, telefono) {
 
-  const txt = mensaje.trim();
-  const lower = txt.toLowerCase();
-
-  const nombreCliente = sesion.cliente?.name || '';
-
-  // =====================
-  // GRATITUD / CIERRE
-  // =====================
-
-  if (
-    lower.includes('gracias') ||
-    lower.includes('agradezco') ||
-    lower.includes('muy amable') ||
-    lower.includes('te agradezco')
-  ) {
-    sesion.estado = 'cerrado';
-
-    if (nombreCliente) {
-      return `Con mucho gusto ${nombreCliente}. Quedamos atentos a cualquier novedad.`;
-    }
-
-    return `Con mucho gusto. Quedamos atentos a cualquier requerimiento.`;
-  }
-
-  // =====================
-  // SALUDO
-  // =====================
-
-  if (
-    esSaludo(txt) &&
-    (
-      sesion.estado === 'nuevo' ||
-      sesion.estado === 'cerrado'
-    )
-  ) {
-
-    if (sesion.cliente) {
-      sesion.estado = 'menu';
-
-      return `Hola ${nombreCliente}, qué gusto saludarte nuevamente.
-
-¿En qué puedo ayudarte hoy?
-
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con asesor`;
-    }
-
+  if (!sesion.cliente) {
     const cliente = await buscarClientePorTelefono(telefono);
+    if (cliente) sesion.cliente = cliente;
+  }
 
-    if (cliente) {
-      sesion.cliente = cliente;
-      sesion.estado = 'menu';
+  const respuestaIA = await procesarConIA(
+    mensaje,
+    sesion,
+    telefono
+  );
 
-      return `Hola ${cliente.name}, qué gusto atenderte nuevamente.
+  const texto = respuestaIA
+    .replace(/##[A-Z_]+##/g, '')
+    .trim();
 
-¿En qué puedo ayudarte hoy?
+  // ----------------------
+  // DESPEDIDA
+  // ----------------------
 
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con asesor`;
+  if (respuestaIA.includes('##DESPEDIDA##')) {
+    return texto;
+  }
+
+  // ----------------------
+  // SEGUIMIENTO
+  // ----------------------
+
+  if (respuestaIA.includes('##SEGUIMIENTO##')) {
+
+    if (sesion.ultimoTicket) {
+      return `${texto}
+
+Tu último ticket es el No. ${sesion.ultimoTicket.id} y continúa en gestión.`;
     }
 
-    sesion.estado = 'menu';
+    return `${texto}
 
-    return `Hola, soy Teli de Telcobras SAS.
-
-Con gusto te ayudo.
-
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con asesor`;
+No encuentro un ticket reciente asociado. Si deseas, puedo ayudarte a registrar uno nuevo.`;
   }
 
-  // =====================
-  // SALUDO EN FLUJO
-  // =====================
+  // ----------------------
+  // CREAR TICKET
+  // ----------------------
 
-  if (esSaludo(txt)) {
-    return 'Aquí sigo pendiente para ayudarte.';
-  }
+  if (respuestaIA.includes('##CREAR_TICKET##')) {
 
-  // =====================
-  // MENU
-  // =====================
+    const prioridad = await detectarPrioridadIA(mensaje);
 
-  if (txt === '1') {
-    sesion.estado = 'ventas';
-
-    return `Perfecto${nombreCliente ? ' ' + nombreCliente : ''}.
-
-Cuéntame por favor qué necesitas cotizar y en qué ciudad te encuentras.`;
-  }
-
-  if (txt === '2') {
-    sesion.estado = 'soporte';
-
-    if (sesion.cliente) {
-      return `Claro ${nombreCliente}.
-
-Cuéntame qué inconveniente estás presentando para ayudarte enseguida.`;
-    }
-
-    return `Claro que sí.
-
-Por favor compárteme:
-
-Nombre, empresa, ciudad, teléfono y detalle de la novedad.`;
-  }
-
-  if (txt === '3') {
-    sesion.estado = 'visita';
-
-    return `Con gusto.
-
-Indícame ciudad, ubicación y tipo de visita técnica requerida.`;
-  }
-
-  if (txt === '4') {
-    return `Telcobras SAS presta servicios de telecomunicaciones, redes empresariales, automatización industrial, mantenimiento y soporte técnico a nivel nacional.`;
-  }
-
-  if (txt === '5') {
-    sesion.estado = 'cerrado';
-
-    return `Perfecto.
-
-Voy a compartir tu solicitud con uno de nuestros asesores para que te contacten pronto.`;
-  }
-
-  // =====================
-  // SOPORTE
-  // =====================
-
-  if (sesion.estado === 'soporte') {
-
-    let datos = {};
-
-    if (sesion.cliente) {
-
-      datos = {
-        nombre: sesion.cliente.name,
-        empresa: sesion.cliente.name,
-        ciudad: sesion.cliente.city || 'No indica',
-        telefono,
-        descripcion: txt
-      };
-
-    } else {
-
-      const ia = await extraerDatosIA(txt);
-
-      datos = {
-        nombre: ia.nombre || 'Cliente',
-        empresa: ia.empresa || 'No indica',
-        ciudad: ia.ciudad || 'No indica',
-        telefono,
-        descripcion: ia.descripcion || txt
-      };
-
-      sesion.cliente = {
-        name: datos.nombre,
-        city: datos.ciudad
-      };
-    }
-
-    const nivel = await detectarPrioridadIA(
-      datos.descripcion,
-      datos.empresa
-    );
-
-    const ticket = {
-      ...datos,
-      prioridad: nivel.prioridad,
-      prioridadTexto: nivel.texto,
-      sla: nivel.sla
+    const datos = {
+      nombre: sesion.cliente?.name || 'Cliente',
+      empresa: sesion.cliente?.name || 'No indica',
+      ciudad: sesion.cliente?.city || 'No indica',
+      telefono,
+      descripcion: mensaje,
+      prioridad: prioridad.prioridad,
+      prioridadTexto: prioridad.texto,
+      sla: prioridad.sla
     };
 
-    const ticketId = await crearTicket(ticket);
+    const ticketId = await crearTicket(datos);
 
-    if (nivel.prioridad === '3') {
-      await enviarAlerta(ticket);
+    sesion.ultimoTicket = {
+      id: ticketId,
+      prioridad: prioridad.texto,
+      sla: prioridad.sla
+    };
+
+    if (prioridad.prioridad === '3') {
+      await enviarAlerta(datos);
     }
 
-    sesion.estado = 'ticket_creado';
-
-    return `Perfecto ${datos.nombre}, ya registré tu solicitud.
+    return `${texto}
 
 Ticket No. ${ticketId}
-Prioridad: ${nivel.texto}
-Tiempo estimado inicial: ${nivel.sla}.
-
-Nuestro equipo lo revisará pronto.`;
+Prioridad: ${prioridad.texto}
+Tiempo estimado inicial: ${prioridad.sla}.`;
   }
 
-  // =====================
-  // POST TICKET
-  // =====================
-
-  if (sesion.estado === 'ticket_creado') {
-
-    if (
-      lower.includes('sigue') ||
-      lower.includes('igual') ||
-      lower.includes('continua') ||
-      lower.includes('continúa') ||
-      lower.includes('otro problema')
-    ) {
-      sesion.estado = 'soporte';
-
-      return `Entiendo ${nombreCliente || ''}. Cuéntame la nueva novedad y la registramos enseguida.`;
-    }
-
-    return `Tu solicitud ya quedó registrada${nombreCliente ? ', ' + nombreCliente : ''}. Si necesitas algo más, aquí estaré para ayudarte.`;
-  }
-
-  // =====================
-  // VENTAS
-  // =====================
-
-  if (sesion.estado === 'ventas') {
-    sesion.estado = 'cerrado';
-
-    return `Perfecto, gracias por la información.
-
-Compartiré tu solicitud con nuestro equipo comercial para que te contacten pronto.`;
-  }
-
-  // =====================
-  // VISITA
-  // =====================
-
-  if (sesion.estado === 'visita') {
-    sesion.estado = 'cerrado';
-
-    return `Gracias por la información.
-
-Vamos a validar disponibilidad y te contactaremos para coordinar la visita técnica.`;
-  }
-
-  // =====================
-  // DEFAULT
-  // =====================
-
-  if (nombreCliente) {
-    return `Claro ${nombreCliente}, cuéntame por favor cómo puedo ayudarte.`;
-  }
-
-  return `Con gusto, cuéntame por favor cómo puedo ayudarte.`;
+  return texto;
 }
 
-// =========================
-// WEBHOOK META
-// =========================
+// ======================================
+// WEBHOOK VERIFY
+// ======================================
 
 app.get('/webhook', (req, res) => {
 
@@ -593,6 +416,10 @@ app.get('/webhook', (req, res) => {
 
   return res.sendStatus(403);
 });
+
+// ======================================
+// WEBHOOK RECEIVE
+// ======================================
 
 app.post('/webhook', async (req, res) => {
 
@@ -613,17 +440,25 @@ app.post('/webhook', async (req, res) => {
     setTimeout(() => mensajesProcesados.delete(message.id), 3600000);
 
     const telefono = limpiarTelefono(message.from);
-    const mensaje = message.text?.body || '';
-
-    console.log('WhatsApp recibido:', mensaje);
+    const mensaje = limpiarTexto(message.text?.body || '');
 
     const sesion = obtenerSesion(telefono);
+
+    sesion.historial.push({
+      role: 'user',
+      text: mensaje
+    });
 
     const respuesta = await responderBot(
       mensaje,
       sesion,
       telefono
     );
+
+    sesion.historial.push({
+      role: 'bot',
+      text: respuesta
+    });
 
     await axios.post(
       `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
@@ -649,17 +484,17 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// =========================
+// ======================================
 // HEALTH
-// =========================
+// ======================================
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-// =========================
-// START
-// =========================
+// ======================================
+// SERVER
+// ======================================
 
 const PORT = process.env.PORT || 3000;
 
