@@ -146,13 +146,8 @@ function limpiarTelefono(numero = '') {
 
     let tel = String(numero).replace(/\D/g, '');
 
-    if (tel.length === 10) {
-        tel = '57' + tel;
-    }
-
-    if (tel.length > 12) {
-        tel = tel.slice(-12);
-    }
+    if (tel.length === 10) tel = '57' + tel;
+    if (tel.length > 12) tel = tel.slice(-12);
 
     return tel;
 }
@@ -170,51 +165,168 @@ function limpiarTexto(txt = '') {
     return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-function detectarPrioridad(descripcion = '') {
+// =========================
+// PRIORIDAD FALLBACK
+// =========================
 
-    const txt = descripcion.toLowerCase();
+function detectarPrioridadFallback(descripcion = '', empresa = '') {
 
-    const nivel1 = [
-        'sin internet total',
-        'no hay internet',
-        'sin servicio',
-        'caido',
-        'caído',
-        'planta parada',
-        'servidor caido',
-        'servidor caído',
-        'red caída',
-        'red caida',
-        'scada caido',
-        'urgente'
-    ];
+    const txt = String(descripcion).toLowerCase();
+    const emp = String(empresa).toLowerCase();
 
-    const nivel2 = [
-        'intermitente',
-        'funciona a veces',
-        'a veces no',
-        'lento',
-        'lentitud',
-        'se cae',
-        'inestable',
-        'error',
-        'falla parcial',
-        'sensor fallando'
-    ];
+    let impacto = 1;
+    let severidad = 1;
+    let urgencia = 1;
 
-    if (nivel1.some(p => txt.includes(p))) {
-        return { prioridad: '3', texto: 'NIVEL 1 CRITICO' };
+    if (
+        txt.includes('sin internet total') ||
+        txt.includes('no hay internet') ||
+        txt.includes('sin servicio') ||
+        txt.includes('planta parada') ||
+        txt.includes('scada caido') ||
+        txt.includes('scada caído') ||
+        txt.includes('servidor caido') ||
+        txt.includes('servidor caído') ||
+        txt.includes('no funciona nada')
+    ) severidad = 3;
+
+    else if (
+        txt.includes('intermitente') ||
+        txt.includes('se va y vuelve') ||
+        txt.includes('se cae') ||
+        txt.includes('lento') ||
+        txt.includes('lentitud') ||
+        txt.includes('inestable') ||
+        txt.includes('error')
+    ) severidad = 2;
+
+    if (
+        txt.includes('toda la sede') ||
+        txt.includes('toda la empresa') ||
+        txt.includes('todos') ||
+        txt.includes('nadie tiene internet') ||
+        txt.includes('operacion detenida')
+    ) impacto = 3;
+
+    else if (
+        txt.includes('varios usuarios') ||
+        txt.includes('oficina')
+    ) impacto = 2;
+
+    if (
+        txt.includes('urgente') ||
+        txt.includes('ya') ||
+        txt.includes('inmediato')
+    ) urgencia = 3;
+
+    const vip = ['media commerce', 'mediacommerce', 'comfandi', 'scania'];
+
+    if (vip.some(v => emp.includes(v))) {
+        impacto = Math.max(impacto, 2);
     }
 
-    if (nivel2.some(p => txt.includes(p))) {
-        return { prioridad: '2', texto: 'NIVEL 2 IMPORTANTE' };
+    const score = impacto + severidad + urgencia;
+
+    if (score >= 8 || (impacto === 3 && severidad === 3)) {
+        return {
+            prioridad: '3',
+            texto: 'NIVEL 1 CRITICO',
+            sla: '15 minutos',
+            motivo: 'Alto impacto operacional'
+        };
     }
 
-    return { prioridad: '1', texto: 'NIVEL 3 NORMAL' };
+    if (score >= 5) {
+        return {
+            prioridad: '2',
+            texto: 'NIVEL 2 IMPORTANTE',
+            sla: '1 hora',
+            motivo: 'Afectación parcial relevante'
+        };
+    }
+
+    return {
+        prioridad: '1',
+        texto: 'NIVEL 3 NORMAL',
+        sla: '4 horas',
+        motivo: 'Solicitud sin impacto crítico'
+    };
 }
 
 // =========================
-// IA
+// PRIORIDAD IA
+// =========================
+
+async function detectarPrioridadIA(descripcion = '', empresa = '') {
+
+    try {
+
+        const prompt = `
+Eres coordinador de soporte corporativo de Telcobras SAS.
+
+Clasifica prioridades así:
+
+Nivel 1 Crítico:
+- operación detenida
+- caída total internet
+- SCADA caído
+- planta parada
+- múltiples usuarios sin servicio
+
+Nivel 2 Importante:
+- servicio intermitente
+- lentitud severa
+- falla parcial importante
+- varios usuarios afectados
+
+Nivel 3 Normal:
+- consultas
+- solicitud menor
+- visita técnica
+- requerimiento sin impacto operativo
+
+Analiza este caso:
+
+Empresa: ${empresa}
+Descripción: ${descripcion}
+
+Responde SOLO JSON válido:
+
+{
+ "prioridad":"1 o 2 o 3",
+ "texto":"NIVEL X ...",
+ "sla":"15 minutos / 1 hora / 4 horas",
+ "motivo":"explicación breve"
+}
+`;
+
+        const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+        });
+
+        const limpio = (result.text || '')
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        const json = JSON.parse(limpio);
+
+        if (!json.prioridad) throw new Error('Sin prioridad');
+
+        return json;
+
+    } catch (error) {
+
+        return detectarPrioridadFallback(
+            descripcion,
+            empresa
+        );
+    }
+}
+
+// =========================
+// IA CHAT
 // =========================
 
 async function procesarMensaje(mensaje, sesion) {
@@ -270,7 +382,6 @@ descripcion
 servicio
 
 Responder SOLO JSON válido.
-
 Si no sabes un dato usa null.
 
 ${conversacion}
@@ -327,14 +438,10 @@ async function autenticarOdoo() {
     });
 
     return new Promise((resolve, reject) => {
-
         common.methodCall(
             'authenticate',
             [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
-            (err, uid) => {
-                if (err) return reject(err);
-                resolve(uid);
-            }
+            (err, uid) => err ? reject(err) : resolve(uid)
         );
     });
 }
@@ -350,10 +457,7 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
         models.methodCall(
             'execute_kw',
             [ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args],
-            (err, res) => {
-                if (err) return reject(err);
-                resolve(res);
-            }
+            (err, res) => err ? reject(err) : resolve(res)
         );
     });
 }
@@ -368,16 +472,7 @@ async function crearLead(datos) {
         partner_name: datos.empresa,
         phone: datos.telefono,
         city: datos.ciudad,
-        description:
-`Solicitud Comercial
-
-Cliente: ${datos.nombre}
-Empresa: ${datos.empresa}
-Ciudad: ${datos.ciudad}
-Telefono: ${datos.telefono}
-
-Necesidad:
-${datos.descripcion}`
+        description: datos.descripcion
     }]);
 }
 
@@ -391,16 +486,7 @@ async function crearTicket(datos) {
         priority: datos.prioridad,
         partner_name: datos.nombre,
         partner_phone: datos.telefono,
-        description:
-`Caso de Soporte
-
-Cliente: ${datos.nombre}
-Empresa: ${datos.empresa}
-Ciudad: ${datos.ciudad}
-Telefono: ${datos.telefono}
-
-Detalle:
-${datos.descripcion}`
+        description: datos.descripcion
     }]);
 }
 
@@ -422,14 +508,14 @@ async function enviarAlertaSoporte(datos) {
 `ALERTA ${datos.prioridadTexto}
 
 Cliente: ${datos.nombre}
-Telefono: ${datos.telefono}
 Empresa: ${datos.empresa}
-Ciudad: ${datos.ciudad}
+Telefono: ${datos.telefono}
 
 Caso:
 ${datos.descripcion}
 
-Revisar ticket en Odoo inmediatamente.`
+SLA: ${datos.sla}
+Motivo: ${datos.motivo}`
                 }
             },
             {
@@ -441,12 +527,12 @@ Revisar ticket en Odoo inmediatamente.`
         );
 
     } catch (error) {
-        console.error('Error alerta soporte:', error.response?.data || error.message);
+        console.error(error.response?.data || error.message);
     }
 }
 
 // =========================
-// WEBHOOK VERIFICAR
+// WEBHOOK
 // =========================
 
 app.get('/webhook', (req, res) => {
@@ -461,10 +547,6 @@ app.get('/webhook', (req, res) => {
 
     return res.sendStatus(403);
 });
-
-// =========================
-// WEBHOOK MENSAJES
-// =========================
 
 app.post('/webhook', async (req, res) => {
 
@@ -495,9 +577,8 @@ app.post('/webhook', async (req, res) => {
 
         try {
             respuestaRaw = await procesarMensaje(mensaje, sesion);
-        } catch (error) {
-            console.error(error.response?.data || error.message);
-            respuestaRaw = 'Gracias por escribir a Telcobras. En breve uno de nuestros asesores le atenderá.';
+        } catch {
+            respuestaRaw = 'Gracias por escribir a Telcobras.';
         }
 
         let {
@@ -519,18 +600,23 @@ app.post('/webhook', async (req, res) => {
 
                 respuestaFinal += `
 
-Su solicitud comercial fue registrada correctamente.
+Solicitud registrada.
 Caso No. ${leadId}.`;
             }
 
             if (debeTicket) {
 
-                const nivel = detectarPrioridad(datos.descripcion);
+                const nivel = await detectarPrioridadIA(
+                    datos.descripcion,
+                    datos.empresa
+                );
 
                 const ticket = {
                     ...datos,
                     prioridad: nivel.prioridad,
-                    prioridadTexto: nivel.texto
+                    prioridadTexto: nivel.texto,
+                    sla: nivel.sla,
+                    motivo: nivel.motivo
                 };
 
                 const ticketId = await crearTicket(ticket);
@@ -539,7 +625,8 @@ Caso No. ${leadId}.`;
 
 Su solicitud fue registrada exitosamente.
 Ticket No. ${ticketId}
-Prioridad: ${nivel.texto}.`;
+Prioridad: ${nivel.texto}
+Tiempo estimado inicial: ${nivel.sla}.`;
 
                 if (nivel.prioridad === '3') {
                     await enviarAlertaSoporte(ticket);
@@ -565,6 +652,7 @@ Prioridad: ${nivel.texto}.`;
         return res.sendStatus(200);
 
     } catch (error) {
+
         console.error(error.response?.data || error.message);
         return res.sendStatus(500);
     }
