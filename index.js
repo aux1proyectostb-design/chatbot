@@ -47,6 +47,7 @@ function obtenerSesion(telefono) {
         sesiones.set(telefono, {
             historial: [],
             estado: 'nuevo',
+            cliente: null,
             ultimaActividad: ahora
         });
     }
@@ -56,6 +57,7 @@ function obtenerSesion(telefono) {
     if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
         sesion.historial = [];
         sesion.estado = 'nuevo';
+        sesion.cliente = null;
     }
 
     sesion.ultimaActividad = ahora;
@@ -88,10 +90,9 @@ function esCierre(txt = '') {
 
     return [
         'gracias',
-        'muchas gracias',
         'ok',
-        'dale',
         'perfecto',
+        'dale',
         'listo'
     ].includes(t);
 }
@@ -110,148 +111,37 @@ function limpiarTexto(txt = '') {
     return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-function extraerFlags(texto = '') {
-
-    return {
-        crearLead: texto.includes('##CREAR_LEAD##'),
-        crearTicket: texto.includes('##CREAR_TICKET##'),
-        limpio: texto
-            .replaceAll('##CREAR_LEAD##', '')
-            .replaceAll('##CREAR_TICKET##', '')
-            .trim()
-    };
-}
-
 // =========================
-// MENSAJES FIJOS
+// MENU
 // =========================
 
-function menuPrincipal() {
+function menuPrincipal(nombre = '') {
 
-    return `Buen día, le saluda Teli de Telcobras SAS.
+    if (nombre) {
+        return `Buen día ${nombre}.
 
-Con gusto le apoyaré. Indíqueme por favor la opción deseada:
+Con gusto le apoyaré. Indíqueme la opción deseada:
 
 1. Cotizaciones y ventas
 2. Soporte técnico
 3. Programar visita técnica
 4. Información de servicios
-5. Hablar con asesor
-
-También puede escribir directamente su requerimiento.`;
-}
-
-// =========================
-// PRIORIDAD IA
-// =========================
-
-async function detectarPrioridadIA(descripcion = '', empresa = '') {
-
-    try {
-
-        const prompt = `
-Clasifica prioridad de ticket empresarial.
-
-Nivel 1:
-caída total, sin internet, operación detenida.
-
-Nivel 2:
-intermitencia, lentitud severa, falla parcial importante.
-
-Nivel 3:
-consulta, solicitud menor.
-
-Empresa: ${empresa}
-Caso: ${descripcion}
-
-Responde SOLO JSON:
-
-{
- "prioridad":"1 o 2 o 3",
- "texto":"NIVEL ...",
- "sla":"15 minutos / 1 hora / 4 horas"
-}
-`;
-
-        const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt
-        });
-
-        const limpio = result.text
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
-
-        return JSON.parse(limpio);
-
-    } catch {
-
-        return {
-            prioridad: '1',
-            texto: 'NIVEL 3 NORMAL',
-            sla: '4 horas'
-        };
+5. Hablar con asesor`;
     }
+
+    return `Buen día, le saluda Teli de Telcobras SAS.
+
+Con gusto le apoyaré. Indíqueme la opción deseada:
+
+1. Cotizaciones y ventas
+2. Soporte técnico
+3. Programar visita técnica
+4. Información de servicios
+5. Hablar con asesor`;
 }
 
 // =========================
-// EXTRAER DATOS IA
-// =========================
-
-async function extraerDatosSoporte(texto, telefono) {
-
-    try {
-
-        const prompt = `
-Extrae de este mensaje:
-
-nombre
-empresa
-ciudad
-telefono
-descripcion
-
-Responder SOLO JSON válido.
-
-Mensaje:
-${texto}
-`;
-
-        const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt
-        });
-
-        const limpio = result.text
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
-
-        const json = JSON.parse(limpio);
-
-        return {
-            nombre: limpiarTexto(json.nombre || 'Cliente'),
-            empresa: limpiarTexto(json.empresa || 'No indica'),
-            ciudad: limpiarTexto(json.ciudad || 'No indica'),
-            telefono: limpiarTelefono(json.telefono || telefono),
-            descripcion: limpiarTexto(json.descripcion || 'Sin detalle')
-        };
-
-    } catch {
-
-        return {
-            nombre: 'Cliente',
-            empresa: 'No indica',
-            ciudad: 'No indica',
-            telefono: limpiarTelefono(telefono),
-            descripcion: texto
-        };
-    }
-}
-
-// =========================
-// ODOO
+// ODOO BASE
 // =========================
 
 async function autenticarOdoo() {
@@ -286,19 +176,159 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
     });
 }
 
+// =========================
+// BUSCAR CLIENTE POR TELEFONO
+// =========================
+
+async function buscarClientePorTelefono(numero) {
+
+    try {
+
+        const uid = await autenticarOdoo();
+
+        const tel = limpiarTelefono(numero);
+
+        const ids = await ejecutarOdoo(
+            uid,
+            'res.partner',
+            'search',
+            [[
+                '|',
+                ['phone', 'ilike', tel],
+                ['mobile', 'ilike', tel]
+            ]]
+        );
+
+        if (!ids.length) return null;
+
+        const datos = await ejecutarOdoo(
+            uid,
+            'res.partner',
+            'read',
+            [
+                [ids[0]],
+                ['name', 'phone', 'mobile', 'city']
+            ]
+        );
+
+        return datos[0];
+
+    } catch {
+        return null;
+    }
+}
+
+// =========================
+// PRIORIDAD IA
+// =========================
+
+async function detectarPrioridadIA(descripcion = '', empresa = '') {
+
+    try {
+
+        const prompt = `
+Clasifica ticket empresarial.
+
+Nivel 1:
+caída total, operación detenida, sin internet.
+
+Nivel 2:
+intermitencia, lentitud severa, falla parcial.
+
+Nivel 3:
+consulta menor.
+
+Caso: ${descripcion}
+Empresa: ${empresa}
+
+Responder SOLO JSON:
+
+{
+ "prioridad":"1 o 2 o 3",
+ "texto":"NIVEL ...",
+ "sla":"15 minutos / 1 hora / 4 horas"
+}
+`;
+
+        const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+        });
+
+        const limpio = result.text
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        return JSON.parse(limpio);
+
+    } catch {
+
+        return {
+            prioridad: '1',
+            texto: 'NIVEL 3 NORMAL',
+            sla: '4 horas'
+        };
+    }
+}
+
+// =========================
+// EXTRAER DATOS
+// =========================
+
+async function extraerDatosIA(texto) {
+
+    try {
+
+        const prompt = `
+Extrae:
+
+nombre
+empresa
+ciudad
+descripcion
+
+Responder SOLO JSON.
+
+Texto:
+${texto}
+`;
+
+        const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+        });
+
+        const limpio = result.text
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        return JSON.parse(limpio);
+
+    } catch {
+
+        return {
+            nombre: null,
+            empresa: null,
+            ciudad: null,
+            descripcion: texto
+        };
+    }
+}
+
+// =========================
+// CREAR TICKET
+// =========================
+
 async function crearTicket(datos) {
 
     const uid = await autenticarOdoo();
 
-    let prioridad = '1';
-
-    if (datos.prioridad === '3') prioridad = '3';
-    else if (datos.prioridad === '2') prioridad = '2';
-
     return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
         name: `${datos.prioridadTexto} - ${datos.empresa}`,
         team_id: 7,
-        priority: prioridad,
+        priority: datos.prioridad,
         partner_name: datos.nombre,
         partner_phone: datos.telefono,
         description:
@@ -315,7 +345,7 @@ ${datos.descripcion}`
 // ALERTA
 // =========================
 
-async function enviarAlerta(datos) {
+async function enviarAlerta(ticket) {
 
     try {
 
@@ -326,16 +356,14 @@ async function enviarAlerta(datos) {
                 to: SOPORTE_ALERTA,
                 text: {
                     body:
-`ALERTA ${datos.prioridadTexto}
+`ALERTA ${ticket.prioridadTexto}
 
-Cliente: ${datos.nombre}
-Empresa: ${datos.empresa}
-Telefono: ${datos.telefono}
+Cliente: ${ticket.nombre}
+Empresa: ${ticket.empresa}
+Telefono: ${ticket.telefono}
 
 Caso:
-${datos.descripcion}
-
-SLA: ${datos.sla}`
+${ticket.descripcion}`
                 }
             },
             {
@@ -350,7 +378,7 @@ SLA: ${datos.sla}`
 }
 
 // =========================
-// FLUJO CONVERSACIONAL
+// FLUJO BOT
 // =========================
 
 async function responderBot(mensaje, sesion, telefono) {
@@ -366,30 +394,40 @@ async function responderBot(mensaje, sesion, telefono) {
         )
     ) {
 
+        const cliente = await buscarClientePorTelefono(telefono);
+
+        if (cliente) {
+            sesion.cliente = cliente;
+            sesion.estado = 'menu';
+            return menuPrincipal(cliente.name);
+        }
+
         sesion.estado = 'menu';
         return menuPrincipal();
     }
 
-    // SALUDO EN MEDIO DE FLUJO
+    // SALUDO DURANTE FLUJO
     if (esSaludo(txt)) {
-
-        if (sesion.estado === 'soporte_datos') {
-            return 'Quedo atento a sus datos para registrar el caso.';
-        }
-
         return 'Quedo atento a su solicitud.';
     }
 
     // CIERRE
     if (esCierre(txt)) {
         sesion.estado = 'cerrado';
-        return 'Con gusto. Quedamos atentos a cualquier requerimiento.';
+        return 'Con gusto. Quedamos atentos.';
     }
 
-    // OPCION 2
+    // SOPORTE
     if (txt === '2') {
 
-        sesion.estado = 'soporte_datos';
+        sesion.estado = 'soporte';
+
+        if (sesion.cliente) {
+
+            return `Buen día ${sesion.cliente.name}.
+
+Por favor indíqueme la novedad presentada para registrar el ticket.`;
+        }
 
         return `Gracias por elegir soporte técnico.
 
@@ -398,16 +436,32 @@ Por favor indíqueme:
 Nombre, empresa, ciudad, teléfono y descripción de la falla.`;
     }
 
-    // SOPORTE: ESPERANDO DATOS
-    if (sesion.estado === 'soporte_datos') {
+    // CREAR TICKET
+    if (sesion.estado === 'soporte') {
 
-        const datos = await extraerDatosSoporte(txt, telefono);
+        let datos = {};
 
-        if (
-            datos.nombre === 'Cliente' ||
-            datos.descripcion === 'Sin detalle'
-        ) {
-            return 'Por favor indíqueme nombre, empresa y detalle de la novedad para registrar el ticket.';
+        if (sesion.cliente) {
+
+            datos = {
+                nombre: sesion.cliente.name,
+                empresa: sesion.cliente.name,
+                ciudad: sesion.cliente.city || 'No indica',
+                telefono,
+                descripcion: txt
+            };
+
+        } else {
+
+            const ia = await extraerDatosIA(txt);
+
+            datos = {
+                nombre: ia.nombre || 'Cliente',
+                empresa: ia.empresa || 'No indica',
+                ciudad: ia.ciudad || 'No indica',
+                telefono,
+                descripcion: ia.descripcion || txt
+            };
         }
 
         const nivel = await detectarPrioridadIA(
@@ -437,8 +491,9 @@ Prioridad: ${nivel.texto}
 Tiempo estimado inicial: ${nivel.sla}.`;
     }
 
-    // DEFAULT
-    return menuPrincipal();
+    return menuPrincipal(
+        sesion.cliente?.name || ''
+    );
 }
 
 // =========================
@@ -451,7 +506,10 @@ app.get('/webhook', (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    if (
+        mode === 'subscribe' &&
+        token === VERIFY_TOKEN
+    ) {
         return res.status(200).send(challenge);
     }
 
@@ -476,7 +534,7 @@ app.post('/webhook', async (req, res) => {
         mensajesProcesados.add(message.id);
         setTimeout(() => mensajesProcesados.delete(message.id), 3600000);
 
-        const telefono = message.from;
+        const telefono = limpiarTelefono(message.from);
         const mensaje = message.text?.body || '';
 
         console.log('WhatsApp recibido:', mensaje);
