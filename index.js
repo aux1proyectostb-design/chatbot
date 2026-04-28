@@ -8,7 +8,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =========================
-// CONFIG
+// CONFIGURACION
 // =========================
 
 const META_TOKEN = process.env.META_TOKEN;
@@ -26,11 +26,12 @@ const genAI = new GoogleGenAI({
 });
 
 // =========================
-// MEMORIA
+// MEMORIA SESIONES
 // =========================
 
 const sesiones = new Map();
 const mensajesProcesados = new Set();
+
 const SESION_TTL_MS = 30 * 60 * 1000;
 
 // =========================
@@ -92,51 +93,6 @@ function esSaludo(txt = '') {
   ].includes(t);
 }
 
-function esCierre(txt = '') {
-  const t = txt.toLowerCase().trim();
-
-  return [
-    'gracias',
-    'muchas gracias',
-    'ok',
-    'perfecto',
-    'dale',
-    'listo'
-  ].includes(t);
-}
-
-// =========================
-// MENU
-// =========================
-
-function menuPrincipal(nombre = '') {
-  if (nombre) {
-    return `Buen día ${nombre}.
-
-Es un gusto atenderle nuevamente.
-
-Indíqueme la opción deseada:
-
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con asesor`;
-  }
-
-  return `Buen día, le saluda Teli de Telcobras SAS.
-
-Con gusto le apoyaré.
-
-Indíqueme la opción deseada:
-
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con asesor`;
-}
-
 // =========================
 // ODOO BASE
 // =========================
@@ -170,7 +126,7 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
 }
 
 // =========================
-// CLIENTE POR TELEFONO
+// BUSCAR CLIENTE
 // =========================
 
 async function buscarClientePorTelefono(numero) {
@@ -204,17 +160,18 @@ async function buscarClientePorTelefono(numero) {
 
 async function detectarPrioridadIA(descripcion = '', empresa = '') {
   try {
+
     const prompt = `
-Clasifica ticket empresarial.
+Clasifica ticket empresarial:
 
 Nivel 1:
-caída total, sin internet, operación detenida.
+Sin internet total, operación detenida, caída total.
 
 Nivel 2:
-intermitencia, lentitud severa, falla parcial.
+Intermitencia, lentitud severa, falla parcial.
 
 Nivel 3:
-consulta menor.
+Consulta menor o solicitud básica.
 
 Caso: ${descripcion}
 Empresa: ${empresa}
@@ -241,6 +198,7 @@ Responder SOLO JSON:
     return JSON.parse(limpio);
 
   } catch {
+
     return {
       prioridad: '1',
       texto: 'NIVEL 3 NORMAL',
@@ -255,8 +213,9 @@ Responder SOLO JSON:
 
 async function extraerDatosIA(texto = '') {
   try {
+
     const prompt = `
-Extrae:
+Extrae del texto:
 
 nombre
 empresa
@@ -282,6 +241,7 @@ ${texto}
     return JSON.parse(limpio);
 
   } catch {
+
     return {
       nombre: null,
       empresa: null,
@@ -292,7 +252,7 @@ ${texto}
 }
 
 // =========================
-// ODOO TICKET
+// CREAR TICKET
 // =========================
 
 async function crearTicket(datos) {
@@ -315,11 +275,12 @@ ${datos.descripcion}`
 }
 
 // =========================
-// ALERTA
+// ALERTA INTERNA
 // =========================
 
 async function enviarAlerta(ticket) {
   try {
+
     await axios.post(
       `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -346,6 +307,7 @@ SLA: ${ticket.sla}`
         }
       }
     );
+
   } catch {}
 }
 
@@ -358,23 +320,30 @@ async function responderBot(mensaje, sesion, telefono) {
   const txt = mensaje.trim();
   const lower = txt.toLowerCase();
 
-  // ---------------------
-  // CIERRE
-  // ---------------------
+  const nombreCliente = sesion.cliente?.name || '';
 
-  if (esCierre(txt)) {
+  // =====================
+  // GRATITUD / CIERRE
+  // =====================
+
+  if (
+    lower.includes('gracias') ||
+    lower.includes('agradezco') ||
+    lower.includes('muy amable') ||
+    lower.includes('te agradezco')
+  ) {
     sesion.estado = 'cerrado';
 
-    const nombre = sesion.cliente?.name
-      ? ` ${sesion.cliente.name}`
-      : '';
+    if (nombreCliente) {
+      return `Con mucho gusto ${nombreCliente}. Quedamos atentos a cualquier novedad.`;
+    }
 
-    return `Con gusto${nombre}. Quedamos atentos a cualquier requerimiento.`;
+    return `Con mucho gusto. Quedamos atentos a cualquier requerimiento.`;
   }
 
-  // ---------------------
-  // SALUDO NUEVO
-  // ---------------------
+  // =====================
+  // SALUDO
+  // =====================
 
   if (
     esSaludo(txt) &&
@@ -384,61 +353,84 @@ async function responderBot(mensaje, sesion, telefono) {
     )
   ) {
 
+    if (sesion.cliente) {
+      sesion.estado = 'menu';
+
+      return `Hola ${nombreCliente}, qué gusto saludarte nuevamente.
+
+¿En qué puedo ayudarte hoy?
+
+1. Cotizaciones y ventas
+2. Soporte técnico
+3. Programar visita técnica
+4. Información de servicios
+5. Hablar con asesor`;
+    }
+
     const cliente = await buscarClientePorTelefono(telefono);
 
     if (cliente) {
       sesion.cliente = cliente;
       sesion.estado = 'menu';
-      return menuPrincipal(cliente.name);
+
+      return `Hola ${cliente.name}, qué gusto atenderte nuevamente.
+
+¿En qué puedo ayudarte hoy?
+
+1. Cotizaciones y ventas
+2. Soporte técnico
+3. Programar visita técnica
+4. Información de servicios
+5. Hablar con asesor`;
     }
 
     sesion.estado = 'menu';
-    return menuPrincipal();
+
+    return `Hola, soy Teli de Telcobras SAS.
+
+Con gusto te ayudo.
+
+1. Cotizaciones y ventas
+2. Soporte técnico
+3. Programar visita técnica
+4. Información de servicios
+5. Hablar con asesor`;
   }
 
-  // ---------------------
+  // =====================
   // SALUDO EN FLUJO
-  // ---------------------
+  // =====================
 
   if (esSaludo(txt)) {
-
-    if (sesion.estado === 'soporte') {
-      return 'Quedo atento al detalle de la novedad para registrar el caso.';
-    }
-
-    if (sesion.estado === 'ventas') {
-      return 'Quedo atento a su requerimiento comercial.';
-    }
-
-    return 'Quedo atento a su solicitud.';
+    return 'Aquí sigo pendiente para ayudarte.';
   }
 
-  // ---------------------
-  // OPCIONES
-  // ---------------------
+  // =====================
+  // MENU
+  // =====================
 
   if (txt === '1') {
     sesion.estado = 'ventas';
 
-    return `Con gusto.
+    return `Perfecto${nombreCliente ? ' ' + nombreCliente : ''}.
 
-Por favor indíqueme nombre, empresa, ciudad y detalle de la cotización requerida.`;
+Cuéntame por favor qué necesitas cotizar y en qué ciudad te encuentras.`;
   }
 
   if (txt === '2') {
     sesion.estado = 'soporte';
 
     if (sesion.cliente) {
-      return `Buen día ${sesion.cliente.name}.
+      return `Claro ${nombreCliente}.
 
-Por favor indíqueme la novedad presentada para registrar el ticket de soporte.`;
+Cuéntame qué inconveniente estás presentando para ayudarte enseguida.`;
     }
 
-    return `Gracias por elegir soporte técnico.
+    return `Claro que sí.
 
-Por favor indíqueme:
+Por favor compárteme:
 
-Nombre, empresa, ciudad, teléfono y descripción de la falla.`;
+Nombre, empresa, ciudad, teléfono y detalle de la novedad.`;
   }
 
   if (txt === '3') {
@@ -446,26 +438,24 @@ Nombre, empresa, ciudad, teléfono y descripción de la falla.`;
 
     return `Con gusto.
 
-Por favor indíqueme ciudad, ubicación, contacto y tipo de visita técnica requerida.`;
+Indícame ciudad, ubicación y tipo de visita técnica requerida.`;
   }
 
   if (txt === '4') {
-    sesion.estado = 'info';
-
-    return `Telcobras SAS presta servicios de telecomunicaciones, redes empresariales, automatización industrial, soporte técnico, mantenimiento y soluciones tecnológicas a nivel nacional.`;
+    return `Telcobras SAS presta servicios de telecomunicaciones, redes empresariales, automatización industrial, mantenimiento y soporte técnico a nivel nacional.`;
   }
 
   if (txt === '5') {
-    sesion.estado = 'asesor';
+    sesion.estado = 'cerrado';
 
-    return `Con gusto.
+    return `Perfecto.
 
-Su solicitud será direccionada a uno de nuestros asesores.`;
+Voy a compartir tu solicitud con uno de nuestros asesores para que te contacten pronto.`;
   }
 
-  // ---------------------
+  // =====================
   // SOPORTE
-  // ---------------------
+  // =====================
 
   if (sesion.estado === 'soporte') {
 
@@ -492,6 +482,11 @@ Su solicitud será direccionada a uno de nuestros asesores.`;
         telefono,
         descripcion: ia.descripcion || txt
       };
+
+      sesion.cliente = {
+        name: datos.nombre,
+        city: datos.ciudad
+      };
     }
 
     const nivel = await detectarPrioridadIA(
@@ -514,67 +509,73 @@ Su solicitud será direccionada a uno de nuestros asesores.`;
 
     sesion.estado = 'ticket_creado';
 
-    return `Su solicitud fue registrada exitosamente.
+    return `Perfecto ${datos.nombre}, ya registré tu solicitud.
 
 Ticket No. ${ticketId}
 Prioridad: ${nivel.texto}
-Tiempo estimado inicial: ${nivel.sla}.`;
+Tiempo estimado inicial: ${nivel.sla}.
+
+Nuestro equipo lo revisará pronto.`;
   }
 
-  // ---------------------
+  // =====================
   // POST TICKET
-  // ---------------------
+  // =====================
 
   if (sesion.estado === 'ticket_creado') {
 
     if (
       lower.includes('sigue') ||
+      lower.includes('igual') ||
       lower.includes('continua') ||
       lower.includes('continúa') ||
-      lower.includes('igual') ||
       lower.includes('otro problema')
     ) {
       sesion.estado = 'soporte';
 
-      return 'Entiendo. Por favor indíqueme la nueva novedad presentada para registrar seguimiento.';
+      return `Entiendo ${nombreCliente || ''}. Cuéntame la nueva novedad y la registramos enseguida.`;
     }
 
-    return 'Su caso ya fue registrado. Si presenta una nueva novedad, por favor indíquemela.';
+    return `Tu solicitud ya quedó registrada${nombreCliente ? ', ' + nombreCliente : ''}. Si necesitas algo más, aquí estaré para ayudarte.`;
   }
 
-  // ---------------------
+  // =====================
   // VENTAS
-  // ---------------------
+  // =====================
 
   if (sesion.estado === 'ventas') {
     sesion.estado = 'cerrado';
 
-    return `Gracias por la información.
+    return `Perfecto, gracias por la información.
 
-Su solicitud comercial será atendida por nuestro equipo de ventas.`;
+Compartiré tu solicitud con nuestro equipo comercial para que te contacten pronto.`;
   }
 
-  // ---------------------
+  // =====================
   // VISITA
-  // ---------------------
+  // =====================
 
   if (sesion.estado === 'visita') {
     sesion.estado = 'cerrado';
 
     return `Gracias por la información.
 
-Su solicitud de visita técnica será validada por nuestro equipo operativo.`;
+Vamos a validar disponibilidad y te contactaremos para coordinar la visita técnica.`;
   }
 
-  // ---------------------
+  // =====================
   // DEFAULT
-  // ---------------------
+  // =====================
 
-  return 'Con gusto. Por favor indíqueme cómo puedo apoyarle.';
+  if (nombreCliente) {
+    return `Claro ${nombreCliente}, cuéntame por favor cómo puedo ayudarte.`;
+  }
+
+  return `Con gusto, cuéntame por favor cómo puedo ayudarte.`;
 }
 
 // =========================
-// WEBHOOK VERIFY
+// WEBHOOK META
 // =========================
 
 app.get('/webhook', (req, res) => {
@@ -592,10 +593,6 @@ app.get('/webhook', (req, res) => {
 
   return res.sendStatus(403);
 });
-
-// =========================
-// WEBHOOK RECEIVE
-// =========================
 
 app.post('/webhook', async (req, res) => {
 
@@ -661,7 +658,7 @@ app.get('/health', (_req, res) => {
 });
 
 // =========================
-// SERVER
+// START
 // =========================
 
 const PORT = process.env.PORT || 3000;
