@@ -4,7 +4,6 @@ const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -23,7 +22,7 @@ const ODOO_USER = 'operativo@telcobras.com';
 const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 
 const genAI = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY
+  apiKey: process.env.GEMINI_API_KEY
 });
 
 // =========================
@@ -32,7 +31,6 @@ const genAI = new GoogleGenAI({
 
 const sesiones = new Map();
 const mensajesProcesados = new Set();
-
 const SESION_TTL_MS = 30 * 60 * 1000;
 
 // =========================
@@ -40,75 +38,71 @@ const SESION_TTL_MS = 30 * 60 * 1000;
 // =========================
 
 function obtenerSesion(telefono) {
+  const ahora = Date.now();
 
-    const ahora = Date.now();
+  if (!sesiones.has(telefono)) {
+    sesiones.set(telefono, {
+      historial: [],
+      estado: 'nuevo',
+      cliente: null,
+      ultimaActividad: ahora
+    });
+  }
 
-    if (!sesiones.has(telefono)) {
-        sesiones.set(telefono, {
-            historial: [],
-            estado: 'nuevo',
-            cliente: null,
-            ultimaActividad: ahora
-        });
-    }
+  const sesion = sesiones.get(telefono);
 
-    const sesion = sesiones.get(telefono);
+  if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
+    sesion.historial = [];
+    sesion.estado = 'nuevo';
+    sesion.cliente = null;
+  }
 
-    if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
-        sesion.historial = [];
-        sesion.estado = 'nuevo';
-        sesion.cliente = null;
-    }
-
-    sesion.ultimaActividad = ahora;
-
-    return sesion;
+  sesion.ultimaActividad = ahora;
+  return sesion;
 }
 
 // =========================
 // UTILIDADES
 // =========================
 
-function esSaludo(txt = '') {
-
-    const t = txt.toLowerCase().trim();
-
-    return [
-        'hola',
-        'buenas',
-        'buenos dias',
-        'buenos días',
-        'buen dia',
-        'buen día',
-        'hello'
-    ].includes(t);
-}
-
-function esCierre(txt = '') {
-
-    const t = txt.toLowerCase().trim();
-
-    return [
-        'gracias',
-        'ok',
-        'perfecto',
-        'dale',
-        'listo'
-    ].includes(t);
+function limpiarTexto(txt = '') {
+  return String(txt).trim().replace(/\s+/g, ' ');
 }
 
 function limpiarTelefono(numero = '') {
+  let tel = String(numero).replace(/\D/g, '');
 
-    let tel = String(numero).replace(/\D/g, '');
+  if (tel.length === 10) tel = '57' + tel;
+  if (tel.length > 12) tel = tel.slice(-12);
 
-    if (tel.length === 10) tel = '57' + tel;
-    if (tel.length > 12) tel = tel.slice(-12);
-
-    return tel;
+  return tel;
 }
 
-function limpiarTexto(txt = '') {
-    return String(txt).trim().replace(/\s+/g, ' ');
+function esSaludo(txt = '') {
+  const t = txt.toLowerCase().trim();
+
+  return [
+    'hola',
+    'buenas',
+    'buenos dias',
+    'buenos días',
+    'buen dia',
+    'buen día',
+    'hello'
+  ].includes(t);
+}
+
+function esCierre(txt = '') {
+  const t = txt.toLowerCase().trim();
+
+  return [
+    'gracias',
+    'muchas gracias',
+    'ok',
+    'perfecto',
+    'dale',
+    'listo'
+  ].includes(t);
 }
 
 // =========================
@@ -116,22 +110,25 @@ function limpiarTexto(txt = '') {
 // =========================
 
 function menuPrincipal(nombre = '') {
+  if (nombre) {
+    return `Buen día ${nombre}.
 
-    if (nombre) {
-        return `Buen día ${nombre}.
+Es un gusto atenderle nuevamente.
 
-Con gusto le apoyaré. Indíqueme la opción deseada:
+Indíqueme la opción deseada:
 
 1. Cotizaciones y ventas
 2. Soporte técnico
 3. Programar visita técnica
 4. Información de servicios
 5. Hablar con asesor`;
-    }
+  }
 
-    return `Buen día, le saluda Teli de Telcobras SAS.
+  return `Buen día, le saluda Teli de Telcobras SAS.
 
-Con gusto le apoyaré. Indíqueme la opción deseada:
+Con gusto le apoyaré.
+
+Indíqueme la opción deseada:
 
 1. Cotizaciones y ventas
 2. Soporte técnico
@@ -145,92 +142,73 @@ Con gusto le apoyaré. Indíqueme la opción deseada:
 // =========================
 
 async function autenticarOdoo() {
+  const common = xmlrpc.createSecureClient({
+    url: `${ODOO_URL}/xmlrpc/2/common`
+  });
 
-    const common = xmlrpc.createSecureClient({
-        url: `${ODOO_URL}/xmlrpc/2/common`
-    });
-
-    return new Promise((resolve, reject) => {
-
-        common.methodCall(
-            'authenticate',
-            [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
-            (err, uid) => err ? reject(err) : resolve(uid)
-        );
-    });
+  return new Promise((resolve, reject) => {
+    common.methodCall(
+      'authenticate',
+      [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
+      (err, uid) => err ? reject(err) : resolve(uid)
+    );
+  });
 }
 
 function ejecutarOdoo(uid, modelo, metodo, args) {
-
-    return new Promise((resolve, reject) => {
-
-        const models = xmlrpc.createSecureClient({
-            url: `${ODOO_URL}/xmlrpc/2/object`
-        });
-
-        models.methodCall(
-            'execute_kw',
-            [ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args],
-            (err, res) => err ? reject(err) : resolve(res)
-        );
+  return new Promise((resolve, reject) => {
+    const models = xmlrpc.createSecureClient({
+      url: `${ODOO_URL}/xmlrpc/2/object`
     });
+
+    models.methodCall(
+      'execute_kw',
+      [ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args],
+      (err, res) => err ? reject(err) : resolve(res)
+    );
+  });
 }
 
 // =========================
-// BUSCAR CLIENTE POR TELEFONO
+// CLIENTE POR TELEFONO
 // =========================
 
 async function buscarClientePorTelefono(numero) {
+  try {
+    const uid = await autenticarOdoo();
+    const tel = limpiarTelefono(numero);
 
-    try {
+    const ids = await ejecutarOdoo(uid, 'res.partner', 'search', [[
+      '|',
+      ['phone', 'ilike', tel],
+      ['mobile', 'ilike', tel]
+    ]]);
 
-        const uid = await autenticarOdoo();
+    if (!ids.length) return null;
 
-        const tel = limpiarTelefono(numero);
+    const data = await ejecutarOdoo(uid, 'res.partner', 'read', [
+      [ids[0]],
+      ['name', 'phone', 'mobile', 'city']
+    ]);
 
-        const ids = await ejecutarOdoo(
-            uid,
-            'res.partner',
-            'search',
-            [[
-                '|',
-                ['phone', 'ilike', tel],
-                ['mobile', 'ilike', tel]
-            ]]
-        );
+    return data[0];
 
-        if (!ids.length) return null;
-
-        const datos = await ejecutarOdoo(
-            uid,
-            'res.partner',
-            'read',
-            [
-                [ids[0]],
-                ['name', 'phone', 'mobile', 'city']
-            ]
-        );
-
-        return datos[0];
-
-    } catch {
-        return null;
-    }
+  } catch {
+    return null;
+  }
 }
 
 // =========================
-// PRIORIDAD IA
+// IA PRIORIDAD
 // =========================
 
 async function detectarPrioridadIA(descripcion = '', empresa = '') {
-
-    try {
-
-        const prompt = `
+  try {
+    const prompt = `
 Clasifica ticket empresarial.
 
 Nivel 1:
-caída total, operación detenida, sin internet.
+caída total, sin internet, operación detenida.
 
 Nivel 2:
 intermitencia, lentitud severa, falla parcial.
@@ -250,37 +228,34 @@ Responder SOLO JSON:
 }
 `;
 
-        const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt
-        });
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt
+    });
 
-        const limpio = result.text
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
+    const limpio = (result.text || '')
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
 
-        return JSON.parse(limpio);
+    return JSON.parse(limpio);
 
-    } catch {
-
-        return {
-            prioridad: '1',
-            texto: 'NIVEL 3 NORMAL',
-            sla: '4 horas'
-        };
-    }
+  } catch {
+    return {
+      prioridad: '1',
+      texto: 'NIVEL 3 NORMAL',
+      sla: '4 horas'
+    };
+  }
 }
 
 // =========================
-// EXTRAER DATOS
+// IA EXTRAER DATOS
 // =========================
 
-async function extraerDatosIA(texto) {
-
-    try {
-
-        const prompt = `
+async function extraerDatosIA(texto = '') {
+  try {
+    const prompt = `
 Extrae:
 
 nombre
@@ -294,51 +269,49 @@ Texto:
 ${texto}
 `;
 
-        const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt
-        });
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt
+    });
 
-        const limpio = result.text
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
+    const limpio = (result.text || '')
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
 
-        return JSON.parse(limpio);
+    return JSON.parse(limpio);
 
-    } catch {
-
-        return {
-            nombre: null,
-            empresa: null,
-            ciudad: null,
-            descripcion: texto
-        };
-    }
+  } catch {
+    return {
+      nombre: null,
+      empresa: null,
+      ciudad: null,
+      descripcion: texto
+    };
+  }
 }
 
 // =========================
-// CREAR TICKET
+// ODOO TICKET
 // =========================
 
 async function crearTicket(datos) {
+  const uid = await autenticarOdoo();
 
-    const uid = await autenticarOdoo();
-
-    return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
-        name: `${datos.prioridadTexto} - ${datos.empresa}`,
-        team_id: 7,
-        priority: datos.prioridad,
-        partner_name: datos.nombre,
-        partner_phone: datos.telefono,
-        description:
+  return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
+    name: `${datos.prioridadTexto} - ${datos.empresa}`,
+    team_id: 7,
+    priority: String(datos.prioridad),
+    partner_name: datos.nombre,
+    partner_phone: datos.telefono,
+    description:
 `Cliente: ${datos.nombre}
 Empresa: ${datos.empresa}
 Ciudad: ${datos.ciudad}
 Telefono: ${datos.telefono}
 
 ${datos.descripcion}`
-    }]);
+  }]);
 }
 
 // =========================
@@ -346,16 +319,14 @@ ${datos.descripcion}`
 // =========================
 
 async function enviarAlerta(ticket) {
-
-    try {
-
-        await axios.post(
-            `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: 'whatsapp',
-                to: SOPORTE_ALERTA,
-                text: {
-                    body:
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: SOPORTE_ALERTA,
+        text: {
+          body:
 `ALERTA ${ticket.prioridadTexto}
 
 Cliente: ${ticket.nombre}
@@ -363,212 +334,322 @@ Empresa: ${ticket.empresa}
 Telefono: ${ticket.telefono}
 
 Caso:
-${ticket.descripcion}`
-                }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${META_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
+${ticket.descripcion}
 
-    } catch {}
+SLA: ${ticket.sla}`
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${META_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+  } catch {}
 }
 
 // =========================
-// FLUJO BOT
+// BOT HUMANO PREMIUM
 // =========================
 
 async function responderBot(mensaje, sesion, telefono) {
 
-    const txt = mensaje.trim();
+  const txt = mensaje.trim();
+  const lower = txt.toLowerCase();
 
-    // SALUDO NUEVO
-    if (
-        esSaludo(txt) &&
-        (
-            sesion.estado === 'nuevo' ||
-            sesion.estado === 'cerrado'
-        )
-    ) {
+  // ---------------------
+  // CIERRE
+  // ---------------------
 
-        const cliente = await buscarClientePorTelefono(telefono);
+  if (esCierre(txt)) {
+    sesion.estado = 'cerrado';
 
-        if (cliente) {
-            sesion.cliente = cliente;
-            sesion.estado = 'menu';
-            return menuPrincipal(cliente.name);
-        }
+    const nombre = sesion.cliente?.name
+      ? ` ${sesion.cliente.name}`
+      : '';
 
-        sesion.estado = 'menu';
-        return menuPrincipal();
+    return `Con gusto${nombre}. Quedamos atentos a cualquier requerimiento.`;
+  }
+
+  // ---------------------
+  // SALUDO NUEVO
+  // ---------------------
+
+  if (
+    esSaludo(txt) &&
+    (
+      sesion.estado === 'nuevo' ||
+      sesion.estado === 'cerrado'
+    )
+  ) {
+
+    const cliente = await buscarClientePorTelefono(telefono);
+
+    if (cliente) {
+      sesion.cliente = cliente;
+      sesion.estado = 'menu';
+      return menuPrincipal(cliente.name);
     }
 
-    // SALUDO DURANTE FLUJO
-    if (esSaludo(txt)) {
-        return 'Quedo atento a su solicitud.';
+    sesion.estado = 'menu';
+    return menuPrincipal();
+  }
+
+  // ---------------------
+  // SALUDO EN FLUJO
+  // ---------------------
+
+  if (esSaludo(txt)) {
+
+    if (sesion.estado === 'soporte') {
+      return 'Quedo atento al detalle de la novedad para registrar el caso.';
     }
 
-    // CIERRE
-    if (esCierre(txt)) {
-        sesion.estado = 'cerrado';
-        return 'Con gusto. Quedamos atentos.';
+    if (sesion.estado === 'ventas') {
+      return 'Quedo atento a su requerimiento comercial.';
     }
 
-    // SOPORTE
-    if (txt === '2') {
+    return 'Quedo atento a su solicitud.';
+  }
 
-        sesion.estado = 'soporte';
+  // ---------------------
+  // OPCIONES
+  // ---------------------
 
-        if (sesion.cliente) {
+  if (txt === '1') {
+    sesion.estado = 'ventas';
 
-            return `Buen día ${sesion.cliente.name}.
+    return `Con gusto.
 
-Por favor indíqueme la novedad presentada para registrar el ticket.`;
-        }
+Por favor indíqueme nombre, empresa, ciudad y detalle de la cotización requerida.`;
+  }
 
-        return `Gracias por elegir soporte técnico.
+  if (txt === '2') {
+    sesion.estado = 'soporte';
+
+    if (sesion.cliente) {
+      return `Buen día ${sesion.cliente.name}.
+
+Por favor indíqueme la novedad presentada para registrar el ticket de soporte.`;
+    }
+
+    return `Gracias por elegir soporte técnico.
 
 Por favor indíqueme:
 
 Nombre, empresa, ciudad, teléfono y descripción de la falla.`;
+  }
+
+  if (txt === '3') {
+    sesion.estado = 'visita';
+
+    return `Con gusto.
+
+Por favor indíqueme ciudad, ubicación, contacto y tipo de visita técnica requerida.`;
+  }
+
+  if (txt === '4') {
+    sesion.estado = 'info';
+
+    return `Telcobras SAS presta servicios de telecomunicaciones, redes empresariales, automatización industrial, soporte técnico, mantenimiento y soluciones tecnológicas a nivel nacional.`;
+  }
+
+  if (txt === '5') {
+    sesion.estado = 'asesor';
+
+    return `Con gusto.
+
+Su solicitud será direccionada a uno de nuestros asesores.`;
+  }
+
+  // ---------------------
+  // SOPORTE
+  // ---------------------
+
+  if (sesion.estado === 'soporte') {
+
+    let datos = {};
+
+    if (sesion.cliente) {
+
+      datos = {
+        nombre: sesion.cliente.name,
+        empresa: sesion.cliente.name,
+        ciudad: sesion.cliente.city || 'No indica',
+        telefono,
+        descripcion: txt
+      };
+
+    } else {
+
+      const ia = await extraerDatosIA(txt);
+
+      datos = {
+        nombre: ia.nombre || 'Cliente',
+        empresa: ia.empresa || 'No indica',
+        ciudad: ia.ciudad || 'No indica',
+        telefono,
+        descripcion: ia.descripcion || txt
+      };
     }
 
-    // CREAR TICKET
-    if (sesion.estado === 'soporte') {
+    const nivel = await detectarPrioridadIA(
+      datos.descripcion,
+      datos.empresa
+    );
 
-        let datos = {};
+    const ticket = {
+      ...datos,
+      prioridad: nivel.prioridad,
+      prioridadTexto: nivel.texto,
+      sla: nivel.sla
+    };
 
-        if (sesion.cliente) {
+    const ticketId = await crearTicket(ticket);
 
-            datos = {
-                nombre: sesion.cliente.name,
-                empresa: sesion.cliente.name,
-                ciudad: sesion.cliente.city || 'No indica',
-                telefono,
-                descripcion: txt
-            };
+    if (nivel.prioridad === '3') {
+      await enviarAlerta(ticket);
+    }
 
-        } else {
+    sesion.estado = 'ticket_creado';
 
-            const ia = await extraerDatosIA(txt);
-
-            datos = {
-                nombre: ia.nombre || 'Cliente',
-                empresa: ia.empresa || 'No indica',
-                ciudad: ia.ciudad || 'No indica',
-                telefono,
-                descripcion: ia.descripcion || txt
-            };
-        }
-
-        const nivel = await detectarPrioridadIA(
-            datos.descripcion,
-            datos.empresa
-        );
-
-        const ticket = {
-            ...datos,
-            prioridad: nivel.prioridad,
-            prioridadTexto: nivel.texto,
-            sla: nivel.sla
-        };
-
-        const ticketId = await crearTicket(ticket);
-
-        if (nivel.prioridad === '3') {
-            await enviarAlerta(ticket);
-        }
-
-        sesion.estado = 'cerrado';
-
-        return `Su solicitud fue registrada exitosamente.
+    return `Su solicitud fue registrada exitosamente.
 
 Ticket No. ${ticketId}
 Prioridad: ${nivel.texto}
 Tiempo estimado inicial: ${nivel.sla}.`;
+  }
+
+  // ---------------------
+  // POST TICKET
+  // ---------------------
+
+  if (sesion.estado === 'ticket_creado') {
+
+    if (
+      lower.includes('sigue') ||
+      lower.includes('continua') ||
+      lower.includes('continúa') ||
+      lower.includes('igual') ||
+      lower.includes('otro problema')
+    ) {
+      sesion.estado = 'soporte';
+
+      return 'Entiendo. Por favor indíqueme la nueva novedad presentada para registrar seguimiento.';
     }
 
-    return menuPrincipal(
-        sesion.cliente?.name || ''
-    );
+    return 'Su caso ya fue registrado. Si presenta una nueva novedad, por favor indíquemela.';
+  }
+
+  // ---------------------
+  // VENTAS
+  // ---------------------
+
+  if (sesion.estado === 'ventas') {
+    sesion.estado = 'cerrado';
+
+    return `Gracias por la información.
+
+Su solicitud comercial será atendida por nuestro equipo de ventas.`;
+  }
+
+  // ---------------------
+  // VISITA
+  // ---------------------
+
+  if (sesion.estado === 'visita') {
+    sesion.estado = 'cerrado';
+
+    return `Gracias por la información.
+
+Su solicitud de visita técnica será validada por nuestro equipo operativo.`;
+  }
+
+  // ---------------------
+  // DEFAULT
+  // ---------------------
+
+  return 'Con gusto. Por favor indíqueme cómo puedo apoyarle.';
 }
 
 // =========================
-// WEBHOOK
+// WEBHOOK VERIFY
 // =========================
 
 app.get('/webhook', (req, res) => {
 
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
-    if (
-        mode === 'subscribe' &&
-        token === VERIFY_TOKEN
-    ) {
-        return res.status(200).send(challenge);
-    }
+  if (
+    mode === 'subscribe' &&
+    token === VERIFY_TOKEN
+  ) {
+    return res.status(200).send(challenge);
+  }
 
-    return res.sendStatus(403);
+  return res.sendStatus(403);
 });
+
+// =========================
+// WEBHOOK RECEIVE
+// =========================
 
 app.post('/webhook', async (req, res) => {
 
-    try {
+  try {
 
-        const value = req.body.entry?.[0]?.changes?.[0]?.value;
-        const message = value?.messages?.[0];
+    const value = req.body.entry?.[0]?.changes?.[0]?.value;
+    const message = value?.messages?.[0];
 
-        if (!message) return res.sendStatus(200);
-        if (value?.statuses) return res.sendStatus(200);
-        if (message.type !== 'text') return res.sendStatus(200);
+    if (!message) return res.sendStatus(200);
+    if (value?.statuses) return res.sendStatus(200);
+    if (message.type !== 'text') return res.sendStatus(200);
 
-        if (mensajesProcesados.has(message.id)) {
-            return res.sendStatus(200);
-        }
-
-        mensajesProcesados.add(message.id);
-        setTimeout(() => mensajesProcesados.delete(message.id), 3600000);
-
-        const telefono = limpiarTelefono(message.from);
-        const mensaje = message.text?.body || '';
-
-        console.log('WhatsApp recibido:', mensaje);
-
-        const sesion = obtenerSesion(telefono);
-
-        const respuesta = await responderBot(
-            mensaje,
-            sesion,
-            telefono
-        );
-
-        await axios.post(
-            `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: 'whatsapp',
-                to: telefono,
-                text: { body: respuesta }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${META_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        return res.sendStatus(200);
-
-    } catch (error) {
-
-        console.error(error.response?.data || error.message);
-        return res.sendStatus(500);
+    if (mensajesProcesados.has(message.id)) {
+      return res.sendStatus(200);
     }
+
+    mensajesProcesados.add(message.id);
+    setTimeout(() => mensajesProcesados.delete(message.id), 3600000);
+
+    const telefono = limpiarTelefono(message.from);
+    const mensaje = message.text?.body || '';
+
+    console.log('WhatsApp recibido:', mensaje);
+
+    const sesion = obtenerSesion(telefono);
+
+    const respuesta = await responderBot(
+      mensaje,
+      sesion,
+      telefono
+    );
+
+    await axios.post(
+      `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: telefono,
+        text: { body: respuesta }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${META_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return res.sendStatus(200);
+
+  } catch (error) {
+
+    console.error(error.response?.data || error.message);
+    return res.sendStatus(500);
+  }
 });
 
 // =========================
@@ -576,7 +657,7 @@ app.post('/webhook', async (req, res) => {
 // =========================
 
 app.get('/health', (_req, res) => {
-    res.json({ ok: true });
+  res.json({ ok: true });
 });
 
 // =========================
@@ -586,5 +667,5 @@ app.get('/health', (_req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(`Servidor Telcobras activo en ${PORT}`);
+  console.log(`Servidor Telcobras activo en ${PORT}`);
 });
