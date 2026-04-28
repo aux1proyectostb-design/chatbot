@@ -166,7 +166,7 @@ function limpiarTexto(txt = '') {
 }
 
 // =========================
-// PRIORIDAD FALLBACK
+// PRIORIDAD IA + FALLBACK
 // =========================
 
 function detectarPrioridadFallback(descripcion = '', empresa = '') {
@@ -184,9 +184,7 @@ function detectarPrioridadFallback(descripcion = '', empresa = '') {
         txt.includes('sin servicio') ||
         txt.includes('planta parada') ||
         txt.includes('scada caido') ||
-        txt.includes('scada caído') ||
         txt.includes('servidor caido') ||
-        txt.includes('servidor caído') ||
         txt.includes('no funciona nada')
     ) severidad = 3;
 
@@ -196,16 +194,13 @@ function detectarPrioridadFallback(descripcion = '', empresa = '') {
         txt.includes('se cae') ||
         txt.includes('lento') ||
         txt.includes('lentitud') ||
-        txt.includes('inestable') ||
         txt.includes('error')
     ) severidad = 2;
 
     if (
         txt.includes('toda la sede') ||
-        txt.includes('toda la empresa') ||
         txt.includes('todos') ||
-        txt.includes('nadie tiene internet') ||
-        txt.includes('operacion detenida')
+        txt.includes('nadie tiene internet')
     ) impacto = 3;
 
     else if (
@@ -215,8 +210,7 @@ function detectarPrioridadFallback(descripcion = '', empresa = '') {
 
     if (
         txt.includes('urgente') ||
-        txt.includes('ya') ||
-        txt.includes('inmediato')
+        txt.includes('ya')
     ) urgencia = 3;
 
     const vip = ['media commerce', 'mediacommerce', 'comfandi', 'scania'];
@@ -249,54 +243,38 @@ function detectarPrioridadFallback(descripcion = '', empresa = '') {
         prioridad: '1',
         texto: 'NIVEL 3 NORMAL',
         sla: '4 horas',
-        motivo: 'Solicitud sin impacto crítico'
+        motivo: 'Solicitud menor'
     };
 }
-
-// =========================
-// PRIORIDAD IA
-// =========================
 
 async function detectarPrioridadIA(descripcion = '', empresa = '') {
 
     try {
 
         const prompt = `
-Eres coordinador de soporte corporativo de Telcobras SAS.
+Eres coordinador de soporte de Telcobras SAS.
 
-Clasifica prioridades así:
+Clasifica:
 
 Nivel 1 Crítico:
-- operación detenida
-- caída total internet
-- SCADA caído
-- planta parada
-- múltiples usuarios sin servicio
+caída total, operación detenida, sin internet total.
 
 Nivel 2 Importante:
-- servicio intermitente
-- lentitud severa
-- falla parcial importante
-- varios usuarios afectados
+intermitencia, lentitud severa, falla parcial importante.
 
 Nivel 3 Normal:
-- consultas
-- solicitud menor
-- visita técnica
-- requerimiento sin impacto operativo
-
-Analiza este caso:
+consulta, solicitud menor, visita, requerimiento básico.
 
 Empresa: ${empresa}
-Descripción: ${descripcion}
+Caso: ${descripcion}
 
-Responde SOLO JSON válido:
+Responde SOLO JSON:
 
 {
  "prioridad":"1 o 2 o 3",
- "texto":"NIVEL X ...",
+ "texto":"NIVEL ...",
  "sla":"15 minutos / 1 hora / 4 horas",
- "motivo":"explicación breve"
+ "motivo":"breve"
 }
 `;
 
@@ -312,7 +290,7 @@ Responde SOLO JSON válido:
 
         const json = JSON.parse(limpio);
 
-        if (!json.prioridad) throw new Error('Sin prioridad');
+        if (!json.prioridad) throw new Error('sin prioridad');
 
         return json;
 
@@ -372,7 +350,7 @@ async function extraerDatosConGemini(historial, telefonoWhatsapp = '') {
         .join('\n');
 
     const prompt = `
-Extrae del chat:
+Extrae:
 
 nombre
 telefono
@@ -382,7 +360,6 @@ descripcion
 servicio
 
 Responder SOLO JSON válido.
-Si no sabes un dato usa null.
 
 ${conversacion}
 `;
@@ -438,6 +415,7 @@ async function autenticarOdoo() {
     });
 
     return new Promise((resolve, reject) => {
+
         common.methodCall(
             'authenticate',
             [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
@@ -480,18 +458,30 @@ async function crearTicket(datos) {
 
     const uid = await autenticarOdoo();
 
+    let prioridadOdoo = '1';
+
+    if (String(datos.prioridad) === '3') prioridadOdoo = '3';
+    else if (String(datos.prioridad) === '2') prioridadOdoo = '2';
+    else prioridadOdoo = '1';
+
     return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
         name: `${datos.prioridadTexto} - ${datos.empresa}`,
         team_id: 7,
-        priority: datos.prioridad,
+        priority: prioridadOdoo,
         partner_name: datos.nombre,
         partner_phone: datos.telefono,
-        description: datos.descripcion
+        description:
+`Cliente: ${datos.nombre}
+Empresa: ${datos.empresa}
+Ciudad: ${datos.ciudad}
+Telefono: ${datos.telefono}
+
+${datos.descripcion}`
     }]);
 }
 
 // =========================
-// ALERTA SOPORTE
+// ALERTA
 // =========================
 
 async function enviarAlertaSoporte(datos) {
@@ -514,8 +504,7 @@ Telefono: ${datos.telefono}
 Caso:
 ${datos.descripcion}
 
-SLA: ${datos.sla}
-Motivo: ${datos.motivo}`
+SLA: ${datos.sla}`
                 }
             },
             {
@@ -615,8 +604,7 @@ Caso No. ${leadId}.`;
                     ...datos,
                     prioridad: nivel.prioridad,
                     prioridadTexto: nivel.texto,
-                    sla: nivel.sla,
-                    motivo: nivel.motivo
+                    sla: nivel.sla
                 };
 
                 const ticketId = await crearTicket(ticket);
@@ -652,7 +640,6 @@ Tiempo estimado inicial: ${nivel.sla}.`;
         return res.sendStatus(200);
 
     } catch (error) {
-
         console.error(error.response?.data || error.message);
         return res.sendStatus(500);
     }
