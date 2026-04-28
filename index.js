@@ -42,6 +42,10 @@ const sesiones = new Map();
 const mensajesProcesados = new Set();
 const SESION_TTL_MS = 30 * 60 * 1000;
 
+// =========================
+// SESION
+// =========================
+
 function obtenerSesion(telefono) {
 
     const ahora = Date.now();
@@ -49,6 +53,7 @@ function obtenerSesion(telefono) {
     if (!sesiones.has(telefono)) {
         sesiones.set(telefono, {
             historial: [],
+            estado: 'nuevo',
             ultimaActividad: ahora
         });
     }
@@ -57,6 +62,7 @@ function obtenerSesion(telefono) {
 
     if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
         sesion.historial = [];
+        sesion.estado = 'nuevo';
     }
 
     sesion.ultimaActividad = ahora;
@@ -82,10 +88,6 @@ Tu estilo:
 - Sin sonar robótica
 - Respuestas breves (máximo 3 líneas)
 
-Horario:
-Lunes a viernes de 7:30 a.m. a 5:00 p.m.
-Sábados en horario laboral.
-
 Servicios:
 - Telecomunicaciones
 - Redes empresariales
@@ -94,20 +96,6 @@ Servicios:
 - Sensores
 - Soporte técnico remoto y en sitio
 - Mantenimiento
-
-Cuando un cliente salude responde:
-
-Buen día, le saluda Teli de Telcobras SAS.
-
-Con gusto le apoyaré. Por favor indíqueme la opción que desea gestionar:
-
-1. Cotizaciones y ventas
-2. Soporte técnico
-3. Programar visita técnica
-4. Información de servicios
-5. Hablar con un asesor
-
-También puede escribir directamente su necesidad.
 
 Si detectas intención comercial:
 Solicita nombre, empresa, ciudad, teléfono y necesidad.
@@ -119,8 +107,7 @@ Solicita nombre, empresa, ciudad, teléfono y descripción de la falla.
 Cuando tengas datos agrega:
 ##CREAR_TICKET##
 
-Si piden asesor humano:
-Agrega:
+Si piden asesor humano agrega:
 ##ESCALAR##
 `;
 
@@ -165,116 +152,65 @@ function limpiarTexto(txt = '') {
     return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-// =========================
-// PRIORIDAD IA + FALLBACK
-// =========================
+function esSaludo(txt = '') {
 
-function detectarPrioridadFallback(descripcion = '', empresa = '') {
+    const t = txt.toLowerCase().trim();
 
-    const txt = String(descripcion).toLowerCase();
-    const emp = String(empresa).toLowerCase();
-
-    let impacto = 1;
-    let severidad = 1;
-    let urgencia = 1;
-
-    if (
-        txt.includes('sin internet total') ||
-        txt.includes('no hay internet') ||
-        txt.includes('sin servicio') ||
-        txt.includes('planta parada') ||
-        txt.includes('scada caido') ||
-        txt.includes('servidor caido') ||
-        txt.includes('no funciona nada')
-    ) severidad = 3;
-
-    else if (
-        txt.includes('intermitente') ||
-        txt.includes('se va y vuelve') ||
-        txt.includes('se cae') ||
-        txt.includes('lento') ||
-        txt.includes('lentitud') ||
-        txt.includes('error')
-    ) severidad = 2;
-
-    if (
-        txt.includes('toda la sede') ||
-        txt.includes('todos') ||
-        txt.includes('nadie tiene internet')
-    ) impacto = 3;
-
-    else if (
-        txt.includes('varios usuarios') ||
-        txt.includes('oficina')
-    ) impacto = 2;
-
-    if (
-        txt.includes('urgente') ||
-        txt.includes('ya')
-    ) urgencia = 3;
-
-    const vip = ['media commerce', 'mediacommerce', 'comfandi', 'scania'];
-
-    if (vip.some(v => emp.includes(v))) {
-        impacto = Math.max(impacto, 2);
-    }
-
-    const score = impacto + severidad + urgencia;
-
-    if (score >= 8 || (impacto === 3 && severidad === 3)) {
-        return {
-            prioridad: '3',
-            texto: 'NIVEL 1 CRITICO',
-            sla: '15 minutos',
-            motivo: 'Alto impacto operacional'
-        };
-    }
-
-    if (score >= 5) {
-        return {
-            prioridad: '2',
-            texto: 'NIVEL 2 IMPORTANTE',
-            sla: '1 hora',
-            motivo: 'Afectación parcial relevante'
-        };
-    }
-
-    return {
-        prioridad: '1',
-        texto: 'NIVEL 3 NORMAL',
-        sla: '4 horas',
-        motivo: 'Solicitud menor'
-    };
+    return [
+        'hola',
+        'buenas',
+        'buenos dias',
+        'buenos días',
+        'buen dia',
+        'buen día',
+        'hello'
+    ].includes(t);
 }
+
+function esCierre(txt = '') {
+
+    const t = txt.toLowerCase().trim();
+
+    return [
+        'gracias',
+        'muchas gracias',
+        'ok',
+        'ok gracias',
+        'dale',
+        'perfecto',
+        'listo'
+    ].includes(t);
+}
+
+// =========================
+// PRIORIDAD
+// =========================
 
 async function detectarPrioridadIA(descripcion = '', empresa = '') {
 
     try {
 
         const prompt = `
-Eres coordinador de soporte de Telcobras SAS.
+Clasifica este ticket para empresa de soporte:
 
-Clasifica:
+Nivel 1:
+caída total, sin internet, operación detenida.
 
-Nivel 1 Crítico:
-caída total, operación detenida, sin internet total.
+Nivel 2:
+intermitencia, lentitud severa, falla parcial.
 
-Nivel 2 Importante:
-intermitencia, lentitud severa, falla parcial importante.
-
-Nivel 3 Normal:
-consulta, solicitud menor, visita, requerimiento básico.
+Nivel 3:
+consulta, solicitud menor.
 
 Empresa: ${empresa}
 Caso: ${descripcion}
 
-Responde SOLO JSON:
+Responde JSON:
 
 {
  "prioridad":"1 o 2 o 3",
  "texto":"NIVEL ...",
- "sla":"15 minutos / 1 hora / 4 horas",
- "motivo":"breve"
+ "sla":"15 minutos / 1 hora / 4 horas"
 }
 `;
 
@@ -283,31 +219,88 @@ Responde SOLO JSON:
             contents: prompt
         });
 
-        const limpio = (result.text || '')
+        const limpio = result.text
             .replace(/```json/g, '')
             .replace(/```/g, '')
             .trim();
 
-        const json = JSON.parse(limpio);
+        return JSON.parse(limpio);
 
-        if (!json.prioridad) throw new Error('sin prioridad');
+    } catch {
 
-        return json;
-
-    } catch (error) {
-
-        return detectarPrioridadFallback(
-            descripcion,
-            empresa
-        );
+        return {
+            prioridad: '1',
+            texto: 'NIVEL 3 NORMAL',
+            sla: '4 horas'
+        };
     }
 }
 
 // =========================
-// IA CHAT
+// IA CHAT HUMANO
 // =========================
 
 async function procesarMensaje(mensaje, sesion) {
+
+    const texto = mensaje.trim();
+
+    // saludo inicial
+    if (
+        esSaludo(texto) &&
+        sesion.historial.length === 0
+    ) {
+
+        sesion.estado = 'inicio';
+
+        const bienvenida = `
+Buen día, le saluda Teli de Telcobras SAS.
+
+Con gusto le apoyaré. Indíqueme por favor la opción deseada:
+
+1. Cotizaciones y ventas
+2. Soporte técnico
+3. Programar visita técnica
+4. Información de servicios
+5. Hablar con asesor
+
+También puede escribir directamente su requerimiento.
+`.trim();
+
+        sesion.historial.push({
+            role: 'model',
+            content: bienvenida
+        });
+
+        return bienvenida;
+    }
+
+    // saludo repetido
+    if (
+        esSaludo(texto) &&
+        sesion.historial.length > 0
+    ) {
+
+        if (sesion.estado === 'soporte') {
+            return 'Quedo atento al detalle de la novedad.';
+        }
+
+        if (sesion.estado === 'ventas') {
+            return 'Quedo atento a su requerimiento comercial.';
+        }
+
+        return 'Quedo atento a su solicitud.';
+    }
+
+    // cierre
+    if (esCierre(texto)) {
+        sesion.estado = 'cerrado';
+        return 'Con gusto. Quedamos atentos a cualquier requerimiento.';
+    }
+
+    // opciones
+    if (texto === '1') sesion.estado = 'ventas';
+    if (texto === '2') sesion.estado = 'soporte';
+    if (texto === '3') sesion.estado = 'visita';
 
     const historial = sesion.historial
         .map(h => `${h.role}: ${h.content}`)
@@ -315,6 +308,8 @@ async function procesarMensaje(mensaje, sesion) {
 
     const prompt = `
 ${SYSTEM_PROMPT}
+
+Estado conversación: ${sesion.estado}
 
 Historial:
 ${historial}
@@ -329,8 +324,15 @@ Usuario: ${mensaje}
 
     const respuesta = (result.text || '').trim();
 
-    sesion.historial.push({ role: 'user', content: mensaje });
-    sesion.historial.push({ role: 'model', content: respuesta });
+    sesion.historial.push({
+        role: 'user',
+        content: mensaje
+    });
+
+    sesion.historial.push({
+        role: 'model',
+        content: respuesta
+    });
 
     if (sesion.historial.length > 30) {
         sesion.historial = sesion.historial.slice(-30);
@@ -371,7 +373,7 @@ ${conversacion}
             contents: prompt
         });
 
-        const limpio = (result.text || '')
+        const limpio = result.text
             .replace(/```json/g, '')
             .replace(/```/g, '')
             .trim();
@@ -391,7 +393,7 @@ ${conversacion}
             servicio: limpiarTexto(datos.servicio || 'General')
         };
 
-    } catch (error) {
+    } catch {
 
         return {
             nombre: 'Cliente',
@@ -462,7 +464,6 @@ async function crearTicket(datos) {
 
     if (String(datos.prioridad) === '3') prioridadOdoo = '3';
     else if (String(datos.prioridad) === '2') prioridadOdoo = '2';
-    else prioridadOdoo = '1';
 
     return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
         name: `${datos.prioridadTexto} - ${datos.empresa}`,
@@ -562,13 +563,7 @@ app.post('/webhook', async (req, res) => {
 
         const sesion = obtenerSesion(telefono);
 
-        let respuestaRaw;
-
-        try {
-            respuestaRaw = await procesarMensaje(mensaje, sesion);
-        } catch {
-            respuestaRaw = 'Gracias por escribir a Telcobras.';
-        }
+        let respuestaRaw = await procesarMensaje(mensaje, sesion);
 
         let {
             crearLead: debeLead,
@@ -640,6 +635,7 @@ Tiempo estimado inicial: ${nivel.sla}.`;
         return res.sendStatus(200);
 
     } catch (error) {
+
         console.error(error.response?.data || error.message);
         return res.sendStatus(500);
     }
