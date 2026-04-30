@@ -4,6 +4,7 @@ const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -14,7 +15,6 @@ app.use(express.urlencoded({ extended: true }));
 const META_TOKEN = process.env.META_TOKEN;
 const VERIFY_TOKEN = 'telcobras2026';
 const PHONE_NUMBER_ID = '1052042771330730';
-const SOPORTE_ALERTA = '573161966020';
 
 const ODOO_URL = 'https://telcobras-sas.odoo.com';
 const ODOO_DB = 'telcobras-sas';
@@ -26,7 +26,7 @@ const genAI = new GoogleGenAI({
 });
 
 // =====================================================
-// MEMORIA LOCAL
+// MEMORIA
 // =====================================================
 
 const sesiones = new Map();
@@ -38,15 +38,17 @@ const SESION_TTL_MS = 24 * 60 * 60 * 1000;
 // =====================================================
 
 function obtenerSesion(telefono) {
+
   const ahora = Date.now();
 
   if (!sesiones.has(telefono)) {
     sesiones.set(telefono, {
-      historial: [],
       cliente: null,
+      historial: [],
       ultimoTicket: null,
       pendienteRegistro: false,
       esperandoDato: null,
+      tempNombre: null,
       ultimaActividad: ahora
     });
   }
@@ -67,6 +69,7 @@ function obtenerSesion(telefono) {
 // =====================================================
 
 function limpiarTelefono(numero = '') {
+
   let tel = String(numero).replace(/\D/g, '');
 
   if (tel.length === 10) tel = '57' + tel;
@@ -80,27 +83,29 @@ function limpiarTexto(txt = '') {
 }
 
 function esSaludo(txt = '') {
+
   txt = txt.toLowerCase().trim();
 
   return [
     'hola',
     'buenas',
-    'hello',
     'menu',
     'menú',
-    'buen dia',
-    'buen día'
+    'hello',
+    'buen día',
+    'buen dia'
   ].includes(txt);
 }
 
 function esGracias(txt = '') {
+
   txt = txt.toLowerCase();
 
   return (
     txt.includes('gracias') ||
-    txt.includes('ok gracias') ||
     txt.includes('muchas gracias') ||
     txt.includes('te agradezco') ||
+    txt.includes('ok gracias') ||
     txt.includes('listo')
   );
 }
@@ -167,7 +172,7 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
 }
 
 // =====================================================
-// CLIENTES
+// CLIENTES (COMPATIBLE ODOO SAAS)
 // =====================================================
 
 async function buscarClientePorTelefono(numero) {
@@ -175,39 +180,56 @@ async function buscarClientePorTelefono(numero) {
   try {
 
     const uid = await autenticarOdoo();
-
     const tel = limpiarTelefono(numero);
 
-    const ids = await ejecutarOdoo(uid, 'res.partner', 'search', [[
-      '|',
-      ['phone', 'ilike', tel],
-      ['mobile', 'ilike', tel]
-    ]]);
+    const ids = await ejecutarOdoo(
+      uid,
+      'res.partner',
+      'search',
+      [[['phone', 'ilike', tel]]]
+    );
 
     if (!ids.length) return null;
 
-    const data = await ejecutarOdoo(uid, 'res.partner', 'read', [
-      [ids[0]],
-      ['name', 'phone', 'mobile', 'city']
-    ]);
+    const data = await ejecutarOdoo(
+      uid,
+      'res.partner',
+      'read',
+      [
+        [ids[0]],
+        ['name', 'phone', 'city']
+      ]
+    );
 
     return data[0];
 
-  } catch {
+  } catch (error) {
+    console.log('Error buscar cliente:', error.message);
     return null;
   }
 }
 
 async function crearCliente(datos) {
 
-  const uid = await autenticarOdoo();
+  try {
 
-  return await ejecutarOdoo(uid, 'res.partner', 'create', [{
-    name: datos.nombre,
-    phone: datos.telefono,
-    mobile: datos.telefono,
-    city: datos.ciudad
-  }]);
+    const uid = await autenticarOdoo();
+
+    return await ejecutarOdoo(
+      uid,
+      'res.partner',
+      'create',
+      [[{
+        name: datos.nombre,
+        phone: datos.telefono,
+        city: datos.ciudad
+      }]]
+    );
+
+  } catch (error) {
+    console.log('Error crear cliente:', error.message);
+    return null;
+  }
 }
 
 // =====================================================
@@ -218,7 +240,7 @@ async function crearTicket(datos) {
 
   const uid = await autenticarOdoo();
 
-  return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
+  return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [[{
     name: `${datos.prioridadTexto} - ${datos.nombre}`,
     team_id: 7,
     priority: String(datos.prioridad),
@@ -228,7 +250,7 @@ async function crearTicket(datos) {
 `${datos.descripcion}
 
 Ciudad: ${datos.ciudad}`
-  }]);
+  }]]);
 }
 
 async function buscarTicket(ticketId) {
@@ -237,10 +259,15 @@ async function buscarTicket(ticketId) {
 
     const uid = await autenticarOdoo();
 
-    const data = await ejecutarOdoo(uid, 'helpdesk.ticket', 'read', [
-      [Number(ticketId)],
-      ['id', 'name', 'stage_id', 'priority']
-    ]);
+    const data = await ejecutarOdoo(
+      uid,
+      'helpdesk.ticket',
+      'read',
+      [
+        [Number(ticketId)],
+        ['id', 'name', 'stage_id', 'priority']
+      ]
+    );
 
     if (!data.length) return null;
 
@@ -252,7 +279,7 @@ async function buscarTicket(ticketId) {
 }
 
 // =====================================================
-// PRIORIDAD IA
+// IA PRIORIDAD
 // =====================================================
 
 async function detectarPrioridadIA(texto) {
@@ -260,16 +287,16 @@ async function detectarPrioridadIA(texto) {
   try {
 
     const prompt = `
-Clasifica prioridad soporte:
+Clasifica prioridad:
 
 Nivel 1:
-sin internet total, operación detenida.
+Sin internet total, operación detenida.
 
 Nivel 2:
-intermitencia, lentitud, parcial.
+Intermitencia, lentitud, falla parcial.
 
 Nivel 3:
-consulta menor.
+Consulta menor.
 
 Caso:
 ${texto}
@@ -314,14 +341,10 @@ async function conversarIA(mensaje, nombre = '') {
   try {
 
     const prompt = `
-Eres Teli, asistente empresarial de Telcobras SAS.
+Eres Teli, asistente oficial de Telcobras SAS.
 
-Habla:
-- Profesional
-- Humana
-- Cercana
-- Respuestas cortas
-- Máximo 2 líneas
+Habla profesional, humana y breve.
+Máximo 2 líneas.
 
 Cliente: ${nombre || 'Cliente'}
 
@@ -350,34 +373,34 @@ async function responderBot(mensaje, sesion, telefono) {
   const txt = limpiarTexto(mensaje);
   const lower = txt.toLowerCase();
 
-  // -------------------------------------------------
-  // CARGAR CLIENTE
-  // -------------------------------------------------
+  // -------------------------------------------
+  // BUSCAR CLIENTE
+  // -------------------------------------------
 
   if (!sesion.cliente) {
     const cliente = await buscarClientePorTelefono(telefono);
     if (cliente) sesion.cliente = cliente;
   }
 
-  // -------------------------------------------------
+  // -------------------------------------------
   // SALUDO
-  // -------------------------------------------------
+  // -------------------------------------------
 
   if (esSaludo(txt)) {
     return menuPrincipal(sesion.cliente?.name || '');
   }
 
-  // -------------------------------------------------
-  // AGRADECIMIENTO
-  // -------------------------------------------------
+  // -------------------------------------------
+  // GRACIAS
+  // -------------------------------------------
 
   if (esGracias(txt)) {
     return `Con mucho gusto${sesion.cliente?.name ? ' ' + sesion.cliente.name : ''}. Quedamos atentos.`;
   }
 
-  // -------------------------------------------------
+  // -------------------------------------------
   // REGISTRO NUEVO CLIENTE
-  // -------------------------------------------------
+  // -------------------------------------------
 
   if (!sesion.cliente && sesion.pendienteRegistro) {
 
@@ -391,8 +414,8 @@ async function responderBot(mensaje, sesion, telefono) {
 
       await crearCliente({
         nombre: sesion.tempNombre,
-        ciudad: txt,
-        telefono
+        telefono,
+        ciudad: txt
       });
 
       sesion.cliente = {
@@ -407,9 +430,9 @@ async function responderBot(mensaje, sesion, telefono) {
     }
   }
 
-  // -------------------------------------------------
-  // OPCIONES MENU
-  // -------------------------------------------------
+  // -------------------------------------------
+  // MENU
+  // -------------------------------------------
 
   if (txt === '1') {
     return 'Perfecto. Cuéntame qué producto o servicio deseas cotizar.';
@@ -424,27 +447,28 @@ async function responderBot(mensaje, sesion, telefono) {
   }
 
   if (txt === '4') {
-    return 'Prestamos servicios de telecomunicaciones, redes, soporte técnico, automatización industrial y mantenimiento.';
+    return 'Prestamos servicios de telecomunicaciones, redes empresariales, soporte técnico, automatización industrial y mantenimiento.';
   }
 
   if (txt === '5') {
     return 'Perfecto. Te conectaremos con uno de nuestros asesores.';
   }
 
-  // -------------------------------------------------
-  // SI NO EXISTE CLIENTE Y YA HABLA NORMAL
-  // -------------------------------------------------
+  // -------------------------------------------
+  // SI NO EXISTE CLIENTE
+  // -------------------------------------------
 
   if (!sesion.cliente) {
+
     sesion.pendienteRegistro = true;
     sesion.esperandoDato = 'nombre';
 
-    return `Antes de continuar, por favor indícame tu nombre para registrarte.`;
+    return 'Antes de continuar, por favor indícame tu nombre para registrarte.';
   }
 
-  // -------------------------------------------------
+  // -------------------------------------------
   // CONSULTA TICKET
-  // -------------------------------------------------
+  // -------------------------------------------
 
   if (
     lower.includes('estado de mi ticket') ||
@@ -456,10 +480,11 @@ async function responderBot(mensaje, sesion, telefono) {
       return `Claro ${sesion.cliente.name}. Tu ticket No. ${sesion.ultimoTicket.id} continúa en gestión.`;
     }
 
-    return 'Claro. Indícame por favor el número del ticket para revisarlo.';
+    return 'Claro. Indícame por favor el número del ticket.';
   }
 
-  // si manda solo numero ticket
+  // si manda numero ticket
+
   if (/^\d+$/.test(txt) && txt.length <= 6) {
 
     const ticket = await buscarTicket(txt);
@@ -471,14 +496,14 @@ async function responderBot(mensaje, sesion, telefono) {
     return 'No encontré información asociada a ese ticket.';
   }
 
-  // -------------------------------------------------
+  // -------------------------------------------
   // SOPORTE INTERNET
-  // -------------------------------------------------
+  // -------------------------------------------
 
   if (
     lower.includes('internet') ||
-    lower.includes('red') ||
-    lower.includes('wifi')
+    lower.includes('wifi') ||
+    lower.includes('red')
   ) {
 
     const prioridad = await detectarPrioridadIA(txt);
@@ -503,9 +528,9 @@ Prioridad: ${prioridad.texto}
 Tiempo estimado inicial: ${prioridad.sla}.`;
   }
 
-  // -------------------------------------------------
-  // RESPUESTA IA NORMAL
-  // -------------------------------------------------
+  // -------------------------------------------
+  // IA GENERAL
+  // -------------------------------------------
 
   return await conversarIA(txt, sesion.cliente?.name || '');
 
