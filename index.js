@@ -47,6 +47,7 @@ function obtenerSesion(telefono) {
       pendienteRegistro: false,
       esperandoDato: null,
       tempNombre: null,
+      tempCiudad: null,
       problemaPendiente: null,
       ultimaActividad: ahora
     });
@@ -69,10 +70,8 @@ function obtenerSesion(telefono) {
 
 function limpiarTelefono(numero = '') {
   let tel = String(numero).replace(/\D/g, '');
-
   if (tel.length === 10) tel = '57' + tel;
   if (tel.length > 12) tel = tel.slice(-12);
-
   return tel;
 }
 
@@ -80,7 +79,7 @@ function limpiarTexto(txt = '') {
   return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-function capitalizarNombre(txt = '') {
+function capitalizarTexto(txt = '') {
   return txt
     .toLowerCase()
     .split(' ')
@@ -91,44 +90,21 @@ function capitalizarNombre(txt = '') {
 
 function esSaludo(txt = '') {
   txt = txt.toLowerCase().trim();
-
-  return [
-    'hola',
-    'buenas',
-    'hello',
-    'menu',
-    'menú',
-    'buen dia',
-    'buen día'
-  ].includes(txt);
+  return ['hola', 'buenas', 'hello', 'menu', 'menú', 'buen dia', 'buen día'].includes(txt);
 }
 
 function esGracias(txt = '') {
   txt = txt.toLowerCase();
-
-  return (
-    txt.includes('gracias') ||
-    txt.includes('ok gracias') ||
-    txt.includes('muchas gracias') ||
-    txt.includes('te agradezco') ||
-    txt.includes('listo')
-  );
+  return txt.includes('gracias') || txt.includes('muchas gracias') || txt.includes('te agradezco') || txt.includes('ok gracias') || txt === 'listo';
 }
 
 function esDespedida(txt = '') {
   txt = txt.toLowerCase();
-
-  return (
-    txt.includes('hasta luego') ||
-    txt.includes('adios') ||
-    txt.includes('chao') ||
-    txt.includes('nos vemos')
-  );
+  return txt.includes('hasta luego') || txt.includes('adios') || txt.includes('chao') || txt.includes('nos vemos');
 }
 
 function pareceSoporte(txt = '') {
   txt = txt.toLowerCase();
-
   return (
     txt.includes('internet') ||
     txt.includes('wifi') ||
@@ -136,9 +112,27 @@ function pareceSoporte(txt = '') {
     txt.includes('conexion') ||
     txt.includes('conexión') ||
     txt.includes('sin servicio') ||
-    txt.includes('no tengo señal') ||
-    txt.includes('no tengo conexion')
+    txt.includes('sin señal') ||
+    txt.includes('intermitente') ||
+    txt.includes('lento')
   );
+}
+
+function enHorarioLaboral() {
+  const ahora = new Date();
+  const dia = ahora.getDay(); // 0 domingo
+  const hora = ahora.getHours();
+  const minuto = ahora.getMinutes();
+  const total = hora * 60 + minuto;
+
+  if (dia === 0) return false;
+  if (dia >= 1 && dia <= 5) {
+    return total >= (7 * 60 + 30) && total <= (17 * 60);
+  }
+  if (dia === 6) {
+    return total >= (8 * 60) && total <= (12 * 60);
+  }
+  return false;
 }
 
 function menuPrincipal(nombre = '') {
@@ -219,10 +213,7 @@ async function buscarClientePorTelefono(numero) {
       uid,
       'res.partner',
       'read',
-      [
-        [ids[0]],
-        ['name', 'phone', 'city']
-      ]
+      [[ids[0]], ['name', 'phone', 'city', 'company_name']]
     );
 
     return data[0];
@@ -243,7 +234,8 @@ async function crearCliente(datos) {
       [[{
         name: datos.nombre,
         phone: datos.telefono,
-        city: datos.ciudad
+        city: datos.ciudad,
+        company_name: datos.empresa
       }]]
     );
 
@@ -272,9 +264,30 @@ async function crearTicket(datos) {
       description:
 `${datos.descripcion}
 
+Empresa: ${datos.empresa}
 Ciudad: ${datos.ciudad}`
     }]]
   );
+}
+
+async function consultarTicket(idTicket) {
+  try {
+    const uid = await autenticarOdoo();
+
+    const data = await ejecutarOdoo(
+      uid,
+      'helpdesk.ticket',
+      'read',
+      [[Number(idTicket)], ['id', 'stage_id', 'name']]
+    );
+
+    if (!data.length) return null;
+
+    return data[0];
+
+  } catch {
+    return null;
+  }
 }
 
 // =====================================================
@@ -283,7 +296,6 @@ Ciudad: ${datos.ciudad}`
 
 async function detectarPrioridadIA(texto) {
   try {
-
     const prompt = `
 Clasifica prioridad:
 
@@ -313,11 +325,7 @@ Responder SOLO JSON:
       contents: prompt
     });
 
-    const limpio = (result.text || '')
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
+    const limpio = (result.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
     return JSON.parse(limpio);
 
   } catch {
@@ -330,17 +338,17 @@ Responder SOLO JSON:
 }
 
 // =====================================================
-// CREAR TICKET AUTOMATICO
+// CREAR TICKET
 // =====================================================
 
 async function procesarTicket(texto, sesion, telefono) {
-
   const prioridad = await detectarPrioridadIA(texto);
 
   const ticketId = await crearTicket({
     nombre: sesion.cliente.name,
     telefono,
     ciudad: sesion.cliente.city || 'No indica',
+    empresa: sesion.cliente.company_name || 'No indica',
     descripcion: texto,
     prioridad: prioridad.prioridad,
     prioridadTexto: prioridad.texto
@@ -348,11 +356,17 @@ async function procesarTicket(texto, sesion, telefono) {
 
   sesion.ultimoTicket = { id: ticketId };
 
-  return `También registré tu solicitud.
+  let horarioTxt = '';
+
+  if (!enHorarioLaboral()) {
+    horarioTxt = '\n\nTu solicitud fue registrada fuera de horario laboral y será atendida en la próxima jornada hábil.';
+  }
+
+  return `Ya registré tu solicitud.
 
 Ticket No. ${ticketId}
 Prioridad: ${prioridad.texto}
-Tiempo estimado inicial: ${prioridad.sla}.`;
+Tiempo estimado inicial: ${prioridad.sla}.${horarioTxt}`;
 }
 
 // =====================================================
@@ -360,14 +374,18 @@ Tiempo estimado inicial: ${prioridad.sla}.`;
 // =====================================================
 
 async function responderBot(mensaje, sesion, telefono) {
-
   const txt = limpiarTexto(mensaje);
   const lower = txt.toLowerCase();
 
   // Buscar cliente
   if (!sesion.cliente) {
     const cliente = await buscarClientePorTelefono(telefono);
-    if (cliente) sesion.cliente = cliente;
+    if (cliente) {
+      cliente.name = capitalizarTexto(cliente.name || '');
+      cliente.city = capitalizarTexto(cliente.city || '');
+      cliente.company_name = capitalizarTexto(cliente.company_name || '');
+      sesion.cliente = cliente;
+    }
   }
 
   // Saludo
@@ -389,55 +407,60 @@ async function responderBot(mensaje, sesion, telefono) {
   if (!sesion.cliente && sesion.pendienteRegistro) {
 
     if (sesion.esperandoDato === 'nombre') {
-      sesion.tempNombre = capitalizarNombre(txt);
+      sesion.tempNombre = capitalizarTexto(txt);
+      sesion.esperandoDato = 'empresa';
+      return 'Perfecto. ¿Me indicas el nombre de tu empresa por favor?';
+    }
+
+    if (sesion.esperandoDato === 'empresa') {
+      sesion.tempEmpresa = capitalizarTexto(txt);
       sesion.esperandoDato = 'ciudad';
-      return 'Perfecto. ¿Me indicas tu ciudad por favor?';
+      return 'Gracias. ¿Me indicas tu ciudad por favor?';
     }
 
     if (sesion.esperandoDato === 'ciudad') {
 
+      const nombre = sesion.tempNombre;
+      const empresa = sesion.tempEmpresa;
+      const ciudad = capitalizarTexto(txt);
+
       await crearCliente({
-        nombre: sesion.tempNombre,
+        nombre,
         telefono,
-        ciudad: capitalizarNombre(txt)
+        ciudad,
+        empresa
       });
 
       sesion.cliente = {
-        name: sesion.tempNombre,
-        city: capitalizarNombre(txt)
+        name: nombre,
+        city: ciudad,
+        company_name: empresa
       };
 
       sesion.pendienteRegistro = false;
       sesion.esperandoDato = null;
 
-      let respuesta = `Gracias ${sesion.cliente.name}. Ya quedaste registrado.`;
+      let respuesta = `Gracias ${nombre}. Ya quedaste registrado.`;
 
       if (sesion.problemaPendiente) {
-        respuesta += `
-
-${await procesarTicket(
-          sesion.problemaPendiente,
-          sesion,
-          telefono
-        )}`;
-
+        respuesta += `\n\n${await procesarTicket(sesion.problemaPendiente, sesion, telefono)}`;
         sesion.problemaPendiente = null;
       } else {
-        respuesta += ` ¿En qué puedo ayudarte hoy?`;
+        respuesta += '\n\n¿En qué puedo ayudarte hoy?';
       }
 
       return respuesta;
     }
   }
 
-  // Opciones menú
+  // Menú
   if (txt === '1') return 'Perfecto. Cuéntame qué necesitas cotizar.';
   if (txt === '2') return 'Claro que sí. Cuéntame el inconveniente presentado.';
   if (txt === '3') return 'Con gusto. Indícame ciudad, dirección y detalle de la visita.';
-  if (txt === '4') return 'Prestamos servicios de telecomunicaciones, redes, automatización y soporte técnico.';
+  if (txt === '4') return 'Prestamos servicios de telecomunicaciones, redes, soporte técnico, automatización industrial y mantenimiento.';
   if (txt === '5') return 'Perfecto. Te conectaremos con uno de nuestros asesores.';
 
-  // Si no existe cliente y reporta problema
+  // Usuario nuevo
   if (!sesion.cliente) {
 
     if (pareceSoporte(txt)) {
@@ -450,14 +473,21 @@ ${await procesarTicket(
     return 'Antes de continuar, por favor indícame tu nombre para registrarte.';
   }
 
-  // Consulta ticket
-  if (lower.includes('ticket')) {
+  // Consultar ticket
+  if (lower.includes('estado de mi ticket') || lower.includes('ticket')) {
 
     if (sesion.ultimoTicket) {
+      const ticket = await consultarTicket(sesion.ultimoTicket.id);
+
+      if (ticket) {
+        const estado = Array.isArray(ticket.stage_id) ? ticket.stage_id[1] : 'En gestión';
+        return `Claro ${sesion.cliente.name}. Tu ticket No. ${ticket.id} se encuentra en estado: ${estado}.`;
+      }
+
       return `Claro ${sesion.cliente.name}. Tu ticket No. ${sesion.ultimoTicket.id} continúa en gestión.`;
     }
 
-    return 'Indícame por favor el número del ticket.';
+    return 'Por favor indícame el número del ticket a consultar.';
   }
 
   // Soporte directo
@@ -465,7 +495,7 @@ ${await procesarTicket(
     return await procesarTicket(txt, sesion, telefono);
   }
 
-  // IA básica
+  // IA general simple
   return `Claro ${sesion.cliente.name}, cuéntame por favor cómo puedo ayudarte.`;
 }
 
@@ -474,7 +504,6 @@ ${await procesarTicket(
 // =====================================================
 
 app.get('/webhook', (req, res) => {
-
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -491,9 +520,7 @@ app.get('/webhook', (req, res) => {
 // =====================================================
 
 app.post('/webhook', async (req, res) => {
-
   try {
-
     const value = req.body.entry?.[0]?.changes?.[0]?.value;
     const message = value?.messages?.[0];
 
@@ -511,13 +538,11 @@ app.post('/webhook', async (req, res) => {
     const telefono = limpiarTelefono(message.from);
     const mensaje = message.text?.body || '';
 
+    console.log('Mensaje recibido:', telefono, mensaje);
+
     const sesion = obtenerSesion(telefono);
 
-    const respuesta = await responderBot(
-      mensaje,
-      sesion,
-      telefono
-    );
+    const respuesta = await responderBot(mensaje, sesion, telefono);
 
     await axios.post(
       `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
@@ -537,8 +562,7 @@ app.post('/webhook', async (req, res) => {
     return res.sendStatus(200);
 
   } catch (error) {
-
-    console.error(error.response?.data || error.message);
+    console.error('ERROR GENERAL:', error.response?.data || error.message);
     return res.sendStatus(500);
   }
 });
