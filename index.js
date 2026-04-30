@@ -4,7 +4,6 @@ const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -38,7 +37,6 @@ const SESION_TTL_MS = 24 * 60 * 60 * 1000;
 // =====================================================
 
 function obtenerSesion(telefono) {
-
   const ahora = Date.now();
 
   if (!sesiones.has(telefono)) {
@@ -49,6 +47,7 @@ function obtenerSesion(telefono) {
       pendienteRegistro: false,
       esperandoDato: null,
       tempNombre: null,
+      problemaPendiente: null,
       ultimaActividad: ahora
     });
   }
@@ -57,10 +56,10 @@ function obtenerSesion(telefono) {
 
   if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
     sesion.historial = [];
+    sesion.problemaPendiente = null;
   }
 
   sesion.ultimaActividad = ahora;
-
   return sesion;
 }
 
@@ -69,7 +68,6 @@ function obtenerSesion(telefono) {
 // =====================================================
 
 function limpiarTelefono(numero = '') {
-
   let tel = String(numero).replace(/\D/g, '');
 
   if (tel.length === 10) tel = '57' + tel;
@@ -82,36 +80,68 @@ function limpiarTexto(txt = '') {
   return String(txt).trim().replace(/\s+/g, ' ');
 }
 
-function esSaludo(txt = '') {
+function capitalizarNombre(txt = '') {
+  return txt
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' ');
+}
 
+function esSaludo(txt = '') {
   txt = txt.toLowerCase().trim();
 
   return [
     'hola',
     'buenas',
+    'hello',
     'menu',
     'menú',
-    'hello',
-    'buen día',
-    'buen dia'
+    'buen dia',
+    'buen día'
   ].includes(txt);
 }
 
 function esGracias(txt = '') {
-
   txt = txt.toLowerCase();
 
   return (
     txt.includes('gracias') ||
+    txt.includes('ok gracias') ||
     txt.includes('muchas gracias') ||
     txt.includes('te agradezco') ||
-    txt.includes('ok gracias') ||
     txt.includes('listo')
   );
 }
 
-function menuPrincipal(nombre = '') {
+function esDespedida(txt = '') {
+  txt = txt.toLowerCase();
 
+  return (
+    txt.includes('hasta luego') ||
+    txt.includes('adios') ||
+    txt.includes('chao') ||
+    txt.includes('nos vemos')
+  );
+}
+
+function pareceSoporte(txt = '') {
+  txt = txt.toLowerCase();
+
+  return (
+    txt.includes('internet') ||
+    txt.includes('wifi') ||
+    txt.includes('red') ||
+    txt.includes('conexion') ||
+    txt.includes('conexión') ||
+    txt.includes('sin servicio') ||
+    txt.includes('no tengo señal') ||
+    txt.includes('no tengo conexion')
+  );
+}
+
+function menuPrincipal(nombre = '') {
   if (nombre) {
     return `Hola ${nombre}, qué gusto saludarte nuevamente.
 
@@ -140,13 +170,11 @@ Con gusto te ayudo.
 // =====================================================
 
 async function autenticarOdoo() {
-
   const common = xmlrpc.createSecureClient({
     url: `${ODOO_URL}/xmlrpc/2/common`
   });
 
   return new Promise((resolve, reject) => {
-
     common.methodCall(
       'authenticate',
       [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
@@ -156,9 +184,7 @@ async function autenticarOdoo() {
 }
 
 function ejecutarOdoo(uid, modelo, metodo, args) {
-
   return new Promise((resolve, reject) => {
-
     const models = xmlrpc.createSecureClient({
       url: `${ODOO_URL}/xmlrpc/2/object`
     });
@@ -172,13 +198,11 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
 }
 
 // =====================================================
-// CLIENTES (COMPATIBLE ODOO SAAS)
+// CLIENTES
 // =====================================================
 
 async function buscarClientePorTelefono(numero) {
-
   try {
-
     const uid = await autenticarOdoo();
     const tel = limpiarTelefono(numero);
 
@@ -203,16 +227,13 @@ async function buscarClientePorTelefono(numero) {
 
     return data[0];
 
-  } catch (error) {
-    console.log('Error buscar cliente:', error.message);
+  } catch {
     return null;
   }
 }
 
 async function crearCliente(datos) {
-
   try {
-
     const uid = await autenticarOdoo();
 
     return await ejecutarOdoo(
@@ -226,8 +247,7 @@ async function crearCliente(datos) {
       }]]
     );
 
-  } catch (error) {
-    console.log('Error crear cliente:', error.message);
+  } catch {
     return null;
   }
 }
@@ -237,45 +257,24 @@ async function crearCliente(datos) {
 // =====================================================
 
 async function crearTicket(datos) {
-
   const uid = await autenticarOdoo();
 
-  return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [[{
-    name: `${datos.prioridadTexto} - ${datos.nombre}`,
-    team_id: 7,
-    priority: String(datos.prioridad),
-    partner_name: datos.nombre,
-    partner_phone: datos.telefono,
-    description:
+  return await ejecutarOdoo(
+    uid,
+    'helpdesk.ticket',
+    'create',
+    [[{
+      name: `${datos.prioridadTexto} - ${datos.nombre}`,
+      team_id: 7,
+      priority: String(datos.prioridad),
+      partner_name: datos.nombre,
+      partner_phone: datos.telefono,
+      description:
 `${datos.descripcion}
 
 Ciudad: ${datos.ciudad}`
-  }]]);
-}
-
-async function buscarTicket(ticketId) {
-
-  try {
-
-    const uid = await autenticarOdoo();
-
-    const data = await ejecutarOdoo(
-      uid,
-      'helpdesk.ticket',
-      'read',
-      [
-        [Number(ticketId)],
-        ['id', 'name', 'stage_id', 'priority']
-      ]
-    );
-
-    if (!data.length) return null;
-
-    return data[0];
-
-  } catch {
-    return null;
-  }
+    }]]
+  );
 }
 
 // =====================================================
@@ -283,7 +282,6 @@ async function buscarTicket(ticketId) {
 // =====================================================
 
 async function detectarPrioridadIA(texto) {
-
   try {
 
     const prompt = `
@@ -293,7 +291,7 @@ Nivel 1:
 Sin internet total, operación detenida.
 
 Nivel 2:
-Intermitencia, lentitud, falla parcial.
+Intermitencia, lentitud, parcial.
 
 Nivel 3:
 Consulta menor.
@@ -323,7 +321,6 @@ Responder SOLO JSON:
     return JSON.parse(limpio);
 
   } catch {
-
     return {
       prioridad: '1',
       texto: 'NIVEL 3',
@@ -333,35 +330,29 @@ Responder SOLO JSON:
 }
 
 // =====================================================
-// IA GENERAL
+// CREAR TICKET AUTOMATICO
 // =====================================================
 
-async function conversarIA(mensaje, nombre = '') {
+async function procesarTicket(texto, sesion, telefono) {
 
-  try {
+  const prioridad = await detectarPrioridadIA(texto);
 
-    const prompt = `
-Eres Teli, asistente oficial de Telcobras SAS.
+  const ticketId = await crearTicket({
+    nombre: sesion.cliente.name,
+    telefono,
+    ciudad: sesion.cliente.city || 'No indica',
+    descripcion: texto,
+    prioridad: prioridad.prioridad,
+    prioridadTexto: prioridad.texto
+  });
 
-Habla profesional, humana y breve.
-Máximo 2 líneas.
+  sesion.ultimoTicket = { id: ticketId };
 
-Cliente: ${nombre || 'Cliente'}
+  return `También registré tu solicitud.
 
-Usuario:
-${mensaje}
-`;
-
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-
-    return (result.text || '').trim();
-
-  } catch {
-    return 'Con gusto te ayudo.';
-  }
+Ticket No. ${ticketId}
+Prioridad: ${prioridad.texto}
+Tiempo estimado inicial: ${prioridad.sla}.`;
 }
 
 // =====================================================
@@ -373,39 +364,32 @@ async function responderBot(mensaje, sesion, telefono) {
   const txt = limpiarTexto(mensaje);
   const lower = txt.toLowerCase();
 
-  // -------------------------------------------
-  // BUSCAR CLIENTE
-  // -------------------------------------------
-
+  // Buscar cliente
   if (!sesion.cliente) {
     const cliente = await buscarClientePorTelefono(telefono);
     if (cliente) sesion.cliente = cliente;
   }
 
-  // -------------------------------------------
-  // SALUDO
-  // -------------------------------------------
-
+  // Saludo
   if (esSaludo(txt)) {
     return menuPrincipal(sesion.cliente?.name || '');
   }
 
-  // -------------------------------------------
-  // GRACIAS
-  // -------------------------------------------
-
+  // Gracias
   if (esGracias(txt)) {
     return `Con mucho gusto${sesion.cliente?.name ? ' ' + sesion.cliente.name : ''}. Quedamos atentos.`;
   }
 
-  // -------------------------------------------
-  // REGISTRO NUEVO CLIENTE
-  // -------------------------------------------
+  // Despedida
+  if (esDespedida(txt)) {
+    return `Con gusto${sesion.cliente?.name ? ' ' + sesion.cliente.name : ''}. Que tengas un excelente día.`;
+  }
 
+  // Registro pendiente
   if (!sesion.cliente && sesion.pendienteRegistro) {
 
     if (sesion.esperandoDato === 'nombre') {
-      sesion.tempNombre = txt;
+      sesion.tempNombre = capitalizarNombre(txt);
       sesion.esperandoDato = 'ciudad';
       return 'Perfecto. ¿Me indicas tu ciudad por favor?';
     }
@@ -415,50 +399,50 @@ async function responderBot(mensaje, sesion, telefono) {
       await crearCliente({
         nombre: sesion.tempNombre,
         telefono,
-        ciudad: txt
+        ciudad: capitalizarNombre(txt)
       });
 
       sesion.cliente = {
         name: sesion.tempNombre,
-        city: txt
+        city: capitalizarNombre(txt)
       };
 
       sesion.pendienteRegistro = false;
       sesion.esperandoDato = null;
 
-      return `Gracias ${sesion.cliente.name}. Ya quedaste registrado. ¿En qué puedo ayudarte hoy?`;
+      let respuesta = `Gracias ${sesion.cliente.name}. Ya quedaste registrado.`;
+
+      if (sesion.problemaPendiente) {
+        respuesta += `
+
+${await procesarTicket(
+          sesion.problemaPendiente,
+          sesion,
+          telefono
+        )}`;
+
+        sesion.problemaPendiente = null;
+      } else {
+        respuesta += ` ¿En qué puedo ayudarte hoy?`;
+      }
+
+      return respuesta;
     }
   }
 
-  // -------------------------------------------
-  // MENU
-  // -------------------------------------------
+  // Opciones menú
+  if (txt === '1') return 'Perfecto. Cuéntame qué necesitas cotizar.';
+  if (txt === '2') return 'Claro que sí. Cuéntame el inconveniente presentado.';
+  if (txt === '3') return 'Con gusto. Indícame ciudad, dirección y detalle de la visita.';
+  if (txt === '4') return 'Prestamos servicios de telecomunicaciones, redes, automatización y soporte técnico.';
+  if (txt === '5') return 'Perfecto. Te conectaremos con uno de nuestros asesores.';
 
-  if (txt === '1') {
-    return 'Perfecto. Cuéntame qué producto o servicio deseas cotizar.';
-  }
-
-  if (txt === '2') {
-    return 'Claro que sí. Cuéntame el inconveniente presentado.';
-  }
-
-  if (txt === '3') {
-    return 'Con gusto. Indícame ciudad, dirección y detalle de la visita requerida.';
-  }
-
-  if (txt === '4') {
-    return 'Prestamos servicios de telecomunicaciones, redes empresariales, soporte técnico, automatización industrial y mantenimiento.';
-  }
-
-  if (txt === '5') {
-    return 'Perfecto. Te conectaremos con uno de nuestros asesores.';
-  }
-
-  // -------------------------------------------
-  // SI NO EXISTE CLIENTE
-  // -------------------------------------------
-
+  // Si no existe cliente y reporta problema
   if (!sesion.cliente) {
+
+    if (pareceSoporte(txt)) {
+      sesion.problemaPendiente = txt;
+    }
 
     sesion.pendienteRegistro = true;
     sesion.esperandoDato = 'nombre';
@@ -466,74 +450,23 @@ async function responderBot(mensaje, sesion, telefono) {
     return 'Antes de continuar, por favor indícame tu nombre para registrarte.';
   }
 
-  // -------------------------------------------
-  // CONSULTA TICKET
-  // -------------------------------------------
-
-  if (
-    lower.includes('estado de mi ticket') ||
-    lower.includes('mi ticket') ||
-    lower.includes('ticket')
-  ) {
+  // Consulta ticket
+  if (lower.includes('ticket')) {
 
     if (sesion.ultimoTicket) {
       return `Claro ${sesion.cliente.name}. Tu ticket No. ${sesion.ultimoTicket.id} continúa en gestión.`;
     }
 
-    return 'Claro. Indícame por favor el número del ticket.';
+    return 'Indícame por favor el número del ticket.';
   }
 
-  // si manda numero ticket
-
-  if (/^\d+$/.test(txt) && txt.length <= 6) {
-
-    const ticket = await buscarTicket(txt);
-
-    if (ticket) {
-      return `Ticket No. ${ticket.id} se encuentra actualmente en proceso.`;
-    }
-
-    return 'No encontré información asociada a ese ticket.';
+  // Soporte directo
+  if (pareceSoporte(txt)) {
+    return await procesarTicket(txt, sesion, telefono);
   }
 
-  // -------------------------------------------
-  // SOPORTE INTERNET
-  // -------------------------------------------
-
-  if (
-    lower.includes('internet') ||
-    lower.includes('wifi') ||
-    lower.includes('red')
-  ) {
-
-    const prioridad = await detectarPrioridadIA(txt);
-
-    const ticketId = await crearTicket({
-      nombre: sesion.cliente.name,
-      telefono,
-      ciudad: sesion.cliente.city || 'No indica',
-      descripcion: txt,
-      prioridad: prioridad.prioridad,
-      prioridadTexto: prioridad.texto
-    });
-
-    sesion.ultimoTicket = {
-      id: ticketId
-    };
-
-    return `Perfecto ${sesion.cliente.name}, ya registré tu solicitud.
-
-Ticket No. ${ticketId}
-Prioridad: ${prioridad.texto}
-Tiempo estimado inicial: ${prioridad.sla}.`;
-  }
-
-  // -------------------------------------------
-  // IA GENERAL
-  // -------------------------------------------
-
-  return await conversarIA(txt, sesion.cliente?.name || '');
-
+  // IA básica
+  return `Claro ${sesion.cliente.name}, cuéntame por favor cómo puedo ayudarte.`;
 }
 
 // =====================================================
