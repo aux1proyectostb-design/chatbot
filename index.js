@@ -7,9 +7,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ======================================
+// =====================================================
 // CONFIG
-// ======================================
+// =====================================================
 
 const META_TOKEN = process.env.META_TOKEN;
 const VERIFY_TOKEN = 'telcobras2026';
@@ -25,17 +25,17 @@ const genAI = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY
 });
 
-// ======================================
-// MEMORIA
-// ======================================
+// =====================================================
+// MEMORIA LOCAL
+// =====================================================
 
 const sesiones = new Map();
 const mensajesProcesados = new Set();
-const SESION_TTL_MS = 30 * 60 * 1000;
+const SESION_TTL_MS = 24 * 60 * 60 * 1000;
 
-// ======================================
+// =====================================================
 // SESION
-// ======================================
+// =====================================================
 
 function obtenerSesion(telefono) {
   const ahora = Date.now();
@@ -45,7 +45,8 @@ function obtenerSesion(telefono) {
       historial: [],
       cliente: null,
       ultimoTicket: null,
-      saludoMostrado: false,
+      pendienteRegistro: false,
+      esperandoDato: null,
       ultimaActividad: ahora
     });
   }
@@ -54,17 +55,16 @@ function obtenerSesion(telefono) {
 
   if (ahora - sesion.ultimaActividad > SESION_TTL_MS) {
     sesion.historial = [];
-    sesion.ultimoTicket = null;
-    sesion.saludoMostrado = false;
   }
 
   sesion.ultimaActividad = ahora;
+
   return sesion;
 }
 
-// ======================================
+// =====================================================
 // UTILIDADES
-// ======================================
+// =====================================================
 
 function limpiarTelefono(numero = '') {
   let tel = String(numero).replace(/\D/g, '');
@@ -80,30 +80,28 @@ function limpiarTexto(txt = '') {
 }
 
 function esSaludo(txt = '') {
-  const t = txt.toLowerCase().trim();
+  txt = txt.toLowerCase().trim();
 
   return [
     'hola',
     'buenas',
-    'buen día',
-    'buen dia',
-    'buenos dias',
+    'hello',
     'menu',
-    'menú'
-  ].includes(t);
+    'menú',
+    'buen dia',
+    'buen día'
+  ].includes(txt);
 }
 
-function esDespedida(txt = '') {
-  const t = txt.toLowerCase();
+function esGracias(txt = '') {
+  txt = txt.toLowerCase();
 
   return (
-    t.includes('gracias') ||
-    t.includes('te agradezco') ||
-    t.includes('muchas gracias') ||
-    t.includes('ok gracias') ||
-    t.includes('adios') ||
-    t.includes('hasta luego') ||
-    t.includes('listo')
+    txt.includes('gracias') ||
+    txt.includes('ok gracias') ||
+    txt.includes('muchas gracias') ||
+    txt.includes('te agradezco') ||
+    txt.includes('listo')
   );
 }
 
@@ -132,16 +130,18 @@ Con gusto te ayudo.
 5. Hablar con asesor`;
 }
 
-// ======================================
-// ODOO
-// ======================================
+// =====================================================
+// ODOO BASE
+// =====================================================
 
 async function autenticarOdoo() {
+
   const common = xmlrpc.createSecureClient({
     url: `${ODOO_URL}/xmlrpc/2/common`
   });
 
   return new Promise((resolve, reject) => {
+
     common.methodCall(
       'authenticate',
       [ODOO_DB, ODOO_USER, ODOO_PASSWORD, {}],
@@ -151,7 +151,9 @@ async function autenticarOdoo() {
 }
 
 function ejecutarOdoo(uid, modelo, metodo, args) {
+
   return new Promise((resolve, reject) => {
+
     const models = xmlrpc.createSecureClient({
       url: `${ODOO_URL}/xmlrpc/2/object`
     });
@@ -164,14 +166,16 @@ function ejecutarOdoo(uid, modelo, metodo, args) {
   });
 }
 
-// ======================================
-// BUSCAR CLIENTE
-// ======================================
+// =====================================================
+// CLIENTES
+// =====================================================
 
 async function buscarClientePorTelefono(numero) {
+
   try {
 
     const uid = await autenticarOdoo();
+
     const tel = limpiarTelefono(numero);
 
     const ids = await ejecutarOdoo(uid, 'res.partner', 'search', [[
@@ -184,7 +188,7 @@ async function buscarClientePorTelefono(numero) {
 
     const data = await ejecutarOdoo(uid, 'res.partner', 'read', [
       [ids[0]],
-      ['name', 'city', 'phone', 'mobile']
+      ['name', 'phone', 'mobile', 'city']
     ]);
 
     return data[0];
@@ -194,147 +198,81 @@ async function buscarClientePorTelefono(numero) {
   }
 }
 
-// ======================================
-// CREAR TICKET
-// ======================================
+async function crearCliente(datos) {
+
+  const uid = await autenticarOdoo();
+
+  return await ejecutarOdoo(uid, 'res.partner', 'create', [{
+    name: datos.nombre,
+    phone: datos.telefono,
+    mobile: datos.telefono,
+    city: datos.ciudad
+  }]);
+}
+
+// =====================================================
+// TICKETS
+// =====================================================
 
 async function crearTicket(datos) {
 
   const uid = await autenticarOdoo();
 
   return await ejecutarOdoo(uid, 'helpdesk.ticket', 'create', [{
-    name: `${datos.prioridadTexto} - ${datos.empresa}`,
+    name: `${datos.prioridadTexto} - ${datos.nombre}`,
     team_id: 7,
     priority: String(datos.prioridad),
     partner_name: datos.nombre,
     partner_phone: datos.telefono,
     description:
-`Cliente: ${datos.nombre}
-Empresa: ${datos.empresa}
-Ciudad: ${datos.ciudad}
-Telefono: ${datos.telefono}
+`${datos.descripcion}
 
-${datos.descripcion}`
+Ciudad: ${datos.ciudad}`
   }]);
 }
 
-// ======================================
-// ALERTA
-// ======================================
+async function buscarTicket(ticketId) {
 
-async function enviarAlerta(ticket) {
   try {
 
-    await axios.post(
-      `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: SOPORTE_ALERTA,
-        text: {
-          body:
-`ALERTA ${ticket.prioridadTexto}
+    const uid = await autenticarOdoo();
 
-Cliente: ${ticket.nombre}
-Empresa: ${ticket.empresa}
-Telefono: ${ticket.telefono}
+    const data = await ejecutarOdoo(uid, 'helpdesk.ticket', 'read', [
+      [Number(ticketId)],
+      ['id', 'name', 'stage_id', 'priority']
+    ]);
 
-Caso:
-${ticket.descripcion}
+    if (!data.length) return null;
 
-SLA: ${ticket.sla}`
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${META_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+    return data[0];
 
-  } catch {}
+  } catch {
+    return null;
+  }
 }
 
-// ======================================
-// IA CONVERSACIONAL
-// ======================================
+// =====================================================
+// PRIORIDAD IA
+// =====================================================
 
-async function conversarIA(mensaje, sesion, telefono) {
-
-  const nombre = sesion.cliente?.name || 'Cliente';
-  const ticket = sesion.ultimoTicket
-    ? sesion.ultimoTicket.id
-    : 'Ninguno';
-
-  const historial = sesion.historial
-    .slice(-8)
-    .map(x => `${x.role}: ${x.text}`)
-    .join('\n');
-
-  const prompt = `
-Eres Teli, asistente oficial de Telcobras SAS.
-
-Habla profesional, cercana y humana.
-No uses emojis.
-No inventes procesos internos.
-
-Cliente: ${nombre}
-Telefono: ${telefono}
-Ultimo ticket: ${ticket}
-
-Detecta intención y agrega SOLO si aplica:
-
-##CREAR_TICKET##
-##SEGUIMIENTO##
-##VENTAS##
-##VISITA##
-##ASESOR##
-
-Reglas:
-
-- Si reporta una falla nueva -> ##CREAR_TICKET##
-- Si pregunta por ticket anterior -> ##SEGUIMIENTO##
-- Si desea cotizar -> ##VENTAS##
-- Si quiere visita -> ##VISITA##
-- Si quiere asesor -> ##ASESOR##
-
-Historial:
-${historial}
-
-Usuario:
-${mensaje}
-`;
-
-  const result = await genAI.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt
-  });
-
-  return (result.text || '').trim();
-}
-
-// ======================================
-// IA PRIORIDAD
-// ======================================
-
-async function detectarPrioridadIA(descripcion = '') {
+async function detectarPrioridadIA(texto) {
 
   try {
 
     const prompt = `
-Clasifica prioridad empresarial:
+Clasifica prioridad soporte:
 
 Nivel 1:
-Sin internet total, operación detenida, urgencia crítica.
+sin internet total, operación detenida.
 
 Nivel 2:
-Intermitencia, lentitud severa, falla parcial.
+intermitencia, lentitud, parcial.
 
 Nivel 3:
-Consulta menor.
+consulta menor.
 
 Caso:
-${descripcion}
+${texto}
 
 Responder SOLO JSON:
 
@@ -367,148 +305,215 @@ Responder SOLO JSON:
   }
 }
 
-// ======================================
+// =====================================================
+// IA GENERAL
+// =====================================================
+
+async function conversarIA(mensaje, nombre = '') {
+
+  try {
+
+    const prompt = `
+Eres Teli, asistente empresarial de Telcobras SAS.
+
+Habla:
+- Profesional
+- Humana
+- Cercana
+- Respuestas cortas
+- Máximo 2 líneas
+
+Cliente: ${nombre || 'Cliente'}
+
+Usuario:
+${mensaje}
+`;
+
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt
+    });
+
+    return (result.text || '').trim();
+
+  } catch {
+    return 'Con gusto te ayudo.';
+  }
+}
+
+// =====================================================
 // BOT CENTRAL
-// ======================================
+// =====================================================
 
 async function responderBot(mensaje, sesion, telefono) {
 
   const txt = limpiarTexto(mensaje);
   const lower = txt.toLowerCase();
 
-  // -------------------------
-  // BUSCAR CLIENTE
-  // -------------------------
+  // -------------------------------------------------
+  // CARGAR CLIENTE
+  // -------------------------------------------------
 
   if (!sesion.cliente) {
     const cliente = await buscarClientePorTelefono(telefono);
     if (cliente) sesion.cliente = cliente;
   }
 
-  // -------------------------
-  // MENU INICIAL CONTROLADO
-  // -------------------------
+  // -------------------------------------------------
+  // SALUDO
+  // -------------------------------------------------
 
   if (esSaludo(txt)) {
-    sesion.saludoMostrado = true;
     return menuPrincipal(sesion.cliente?.name || '');
   }
 
-  // -------------------------
-  // DESPEDIDA
-  // -------------------------
+  // -------------------------------------------------
+  // AGRADECIMIENTO
+  // -------------------------------------------------
 
-  if (esDespedida(txt)) {
-    return `Con mucho gusto${sesion.cliente?.name ? ' ' + sesion.cliente.name : ''}. Quedamos atentos a cualquier requerimiento.`;
+  if (esGracias(txt)) {
+    return `Con mucho gusto${sesion.cliente?.name ? ' ' + sesion.cliente.name : ''}. Quedamos atentos.`;
   }
 
-  // -------------------------
-  // OPCIONES NUMERICAS
-  // -------------------------
+  // -------------------------------------------------
+  // REGISTRO NUEVO CLIENTE
+  // -------------------------------------------------
+
+  if (!sesion.cliente && sesion.pendienteRegistro) {
+
+    if (sesion.esperandoDato === 'nombre') {
+      sesion.tempNombre = txt;
+      sesion.esperandoDato = 'ciudad';
+      return 'Perfecto. ¿Me indicas tu ciudad por favor?';
+    }
+
+    if (sesion.esperandoDato === 'ciudad') {
+
+      await crearCliente({
+        nombre: sesion.tempNombre,
+        ciudad: txt,
+        telefono
+      });
+
+      sesion.cliente = {
+        name: sesion.tempNombre,
+        city: txt
+      };
+
+      sesion.pendienteRegistro = false;
+      sesion.esperandoDato = null;
+
+      return `Gracias ${sesion.cliente.name}. Ya quedaste registrado. ¿En qué puedo ayudarte hoy?`;
+    }
+  }
+
+  // -------------------------------------------------
+  // OPCIONES MENU
+  // -------------------------------------------------
 
   if (txt === '1') {
-    return `Perfecto.
-
-Cuéntame por favor qué necesitas cotizar y con gusto te orientamos.`;
+    return 'Perfecto. Cuéntame qué producto o servicio deseas cotizar.';
   }
 
   if (txt === '2') {
-    return `Claro que sí.
-
-Cuéntame por favor el inconveniente presentado para ayudarte enseguida.`;
+    return 'Claro que sí. Cuéntame el inconveniente presentado.';
   }
 
   if (txt === '3') {
-    return `Con gusto.
-
-Indícame ciudad, ubicación y detalle de la visita técnica requerida.`;
+    return 'Con gusto. Indícame ciudad, dirección y detalle de la visita requerida.';
   }
 
   if (txt === '4') {
-    return `Telcobras SAS presta servicios de telecomunicaciones, redes empresariales, automatización industrial, soporte técnico y mantenimiento a nivel nacional.`;
+    return 'Prestamos servicios de telecomunicaciones, redes, soporte técnico, automatización industrial y mantenimiento.';
   }
 
   if (txt === '5') {
-    return `Perfecto.
-
-Voy a direccionar tu solicitud con uno de nuestros asesores.`;
+    return 'Perfecto. Te conectaremos con uno de nuestros asesores.';
   }
 
-  // -------------------------
-  // IA
-  // -------------------------
+  // -------------------------------------------------
+  // SI NO EXISTE CLIENTE Y YA HABLA NORMAL
+  // -------------------------------------------------
 
-  const respuestaIA = await conversarIA(
-    txt,
-    sesion,
-    telefono
-  );
+  if (!sesion.cliente) {
+    sesion.pendienteRegistro = true;
+    sesion.esperandoDato = 'nombre';
 
-  const texto = respuestaIA
-    .replace(/##[A-Z_]+##/g, '')
-    .trim();
+    return `Antes de continuar, por favor indícame tu nombre para registrarte.`;
+  }
 
-  // -------------------------
-  // SEGUIMIENTO
-  // -------------------------
+  // -------------------------------------------------
+  // CONSULTA TICKET
+  // -------------------------------------------------
 
-  if (respuestaIA.includes('##SEGUIMIENTO##')) {
+  if (
+    lower.includes('estado de mi ticket') ||
+    lower.includes('mi ticket') ||
+    lower.includes('ticket')
+  ) {
 
     if (sesion.ultimoTicket) {
-      return `${texto}
-
-Tu último ticket es el No. ${sesion.ultimoTicket.id} y continúa en gestión.`;
+      return `Claro ${sesion.cliente.name}. Tu ticket No. ${sesion.ultimoTicket.id} continúa en gestión.`;
     }
 
-    return `${texto}
-
-No encuentro un ticket reciente asociado.`;
+    return 'Claro. Indícame por favor el número del ticket para revisarlo.';
   }
 
-  // -------------------------
-  // CREAR TICKET
-  // -------------------------
+  // si manda solo numero ticket
+  if (/^\d+$/.test(txt) && txt.length <= 6) {
 
-  if (respuestaIA.includes('##CREAR_TICKET##')) {
+    const ticket = await buscarTicket(txt);
+
+    if (ticket) {
+      return `Ticket No. ${ticket.id} se encuentra actualmente en proceso.`;
+    }
+
+    return 'No encontré información asociada a ese ticket.';
+  }
+
+  // -------------------------------------------------
+  // SOPORTE INTERNET
+  // -------------------------------------------------
+
+  if (
+    lower.includes('internet') ||
+    lower.includes('red') ||
+    lower.includes('wifi')
+  ) {
 
     const prioridad = await detectarPrioridadIA(txt);
 
-    const datos = {
-      nombre: sesion.cliente?.name || 'Cliente',
-      empresa: sesion.cliente?.name || 'No indica',
-      ciudad: sesion.cliente?.city || 'No indica',
+    const ticketId = await crearTicket({
+      nombre: sesion.cliente.name,
       telefono,
+      ciudad: sesion.cliente.city || 'No indica',
       descripcion: txt,
       prioridad: prioridad.prioridad,
-      prioridadTexto: prioridad.texto,
-      sla: prioridad.sla
-    };
-
-    const ticketId = await crearTicket(datos);
+      prioridadTexto: prioridad.texto
+    });
 
     sesion.ultimoTicket = {
-      id: ticketId,
-      prioridad: prioridad.texto,
-      sla: prioridad.sla
+      id: ticketId
     };
 
-    if (prioridad.prioridad === '3') {
-      await enviarAlerta(datos);
-    }
-
-    return `${texto}
+    return `Perfecto ${sesion.cliente.name}, ya registré tu solicitud.
 
 Ticket No. ${ticketId}
 Prioridad: ${prioridad.texto}
 Tiempo estimado inicial: ${prioridad.sla}.`;
   }
 
-  return texto;
+  // -------------------------------------------------
+  // RESPUESTA IA NORMAL
+  // -------------------------------------------------
+
+  return await conversarIA(txt, sesion.cliente?.name || '');
+
 }
 
-// ======================================
-// VERIFY
-// ======================================
+// =====================================================
+// WEBHOOK VERIFY
+// =====================================================
 
 app.get('/webhook', (req, res) => {
 
@@ -516,19 +521,16 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (
-    mode === 'subscribe' &&
-    token === VERIFY_TOKEN
-  ) {
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
 
   return res.sendStatus(403);
 });
 
-// ======================================
-// RECEIVE
-// ======================================
+// =====================================================
+// WEBHOOK RECEIVE
+// =====================================================
 
 app.post('/webhook', async (req, res) => {
 
@@ -553,21 +555,11 @@ app.post('/webhook', async (req, res) => {
 
     const sesion = obtenerSesion(telefono);
 
-    sesion.historial.push({
-      role: 'user',
-      text: mensaje
-    });
-
     const respuesta = await responderBot(
       mensaje,
       sesion,
       telefono
     );
-
-    sesion.historial.push({
-      role: 'bot',
-      text: respuesta
-    });
 
     await axios.post(
       `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
@@ -593,17 +585,17 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ======================================
+// =====================================================
 // HEALTH
-// ======================================
+// =====================================================
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-// ======================================
+// =====================================================
 // SERVER
-// ======================================
+// =====================================================
 
 const PORT = process.env.PORT || 3000;
 
